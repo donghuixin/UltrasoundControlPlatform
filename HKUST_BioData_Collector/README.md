@@ -10,7 +10,7 @@
 ## 第一次啟動
 
 1. 先以管理員身份開啟 TX7316 GUI，確認 `CONNECTED`。
-2. 以管理員身份開啟 HSDC Pro，確認 TSW14J50 和 AFE RX profile 正確。
+2. 以管理員身份開啟 HSDC Pro，確認TSW14J50並選`AFE58JD48_120M_8L_M16_FIXED`；不要選JESD M=5的舊`MANUAL`profile。
 3. AFE GUI 完成 `DUT RESET → INITIALIZE LMK → AFE RESET → INITIALIZE AFE`。
 4. TX GUI 中人工確認 Pattern Profile、PRF、脈衝週期、CW OFF 和電源電壓。
 5. 雙擊：

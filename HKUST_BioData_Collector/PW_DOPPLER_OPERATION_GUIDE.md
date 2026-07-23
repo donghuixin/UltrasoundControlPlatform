@@ -163,7 +163,7 @@ Master PRF clock
 
 ### 8.1 Normal模式，先驗證波形
 
-1. 選擇目前已驗證的`AFE58JD48_120M_8L_MANUAL`。
+1. 選擇`AFE58JD48_120M_8L_M16_FIXED`；不要使用會造成重複通道的舊`MANUAL/M=5`文件。
 2. `ADC Output Data Rate = 120M`。
 3. `ADC Input Target Frequency = 1.0M`，它只影響分析標記。
 4. `Average Time Domain = OFF`。

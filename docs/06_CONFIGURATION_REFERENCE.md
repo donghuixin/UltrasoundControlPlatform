@@ -2,7 +2,7 @@
 
 ## HSDC Pro profile
 
-倉庫文件：`configs/hsdc/AFE58JD48_120M_8L_MANUAL.ini`
+倉庫文件：`configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini`
 
 本機安裝位置：
 
@@ -10,7 +10,9 @@
 E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files
 ```
 
-關鍵內容：16 channels、16 bits、120 MSPS、JESD L=8/M=5/F=4/K=8/N=16/Subclass1，以及目前已驗證的lane mapping。複製後重啟HSDC Pro，在AFE RX下拉選同名profile；若timeout，重新初始化AFE LMK/JESD並確認D3/D4狀態。
+關鍵內容：16 channels、16 bits、120 MSPS、JESD L=8/M=16/F=4/K=8/N=16/Subclass1，以及目前的lane mapping。複製後重啟HSDC Pro，在AFE RX下拉選同名profile；若timeout，重新初始化AFE LMK/JESD並確認D3/D4狀態。
+
+禁止使用舊`AFE58JD48_120M_8L_MANUAL.ini`。它把`JESD IP Core_M`寫成5；歷史run均用該文件，並穩定出現`[3,5] [4,6] [9,15] [10,16]`完全重複通道。`M16_FIXED`修正的是數字transport解包；仍須逐SMA單通道注入完成最終映射驗收。
 
 ## TX7316 1 MHz preset
 

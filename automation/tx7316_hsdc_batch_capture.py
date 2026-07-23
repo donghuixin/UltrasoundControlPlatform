@@ -43,7 +43,8 @@ TX7316 + AFE58JD48 + TSW14J50/HSDC Pro 批量角度採集腳本
 1. 先啟動 TX7316 EVM GUI，確認綠色 CONNECTED；完成 Pattern Profile、Delay/TR switch 基本設定。
 2. 再啟動 HSDC Pro，確認 TSW14J50 板名 TIAOPCAW 能連接。
 3. AFE GUI 完成 DUT RESET -> INITIALIZE LMK -> AFE RESET -> INITIALIZE AFE。
-4. HSDC Pro 的 AFE RX profile 應為 AFE58JD48_120M_8L_MANUAL，數據率 120 MSPS。
+4. HSDC Pro 的 AFE RX profile 必須為 AFE58JD48_120M_8L_M16_FIXED，數據率120 MSPS。
+   舊MANUAL文件把JESD M錯寫成5，會造成固定的重複/錯位通道，腳本會拒絕使用。
 5. 最後才執行本腳本。腳本在 HSDC 準備好前會暫停 TX 的 Internal BF，採集前再打開，結束後恢復原值。
 
 【4. 先做完全不接觸硬件的 Dry Run】
@@ -166,7 +167,7 @@ HSDC_DLL = first_existing_path(
     ],
 )
 HSDC_BOARD_SERIAL = "TIAOPCAW"
-HSDC_AFE_RX_DEVICE = "AFE58JD48_120M_8L_MANUAL"
+HSDC_AFE_RX_DEVICE = "AFE58JD48_120M_8L_M16_FIXED"
 HSDC_DEFAULT_CONTROLS_INI = r"C:\Users\Public\Documents\Texas Instruments\High Speed Data Converter Pro\Default_controls.ini"
 
 DEFAULT_OUTPUT_ROOT = os.environ.get(
@@ -312,6 +313,11 @@ def read_hsdc_persisted_settings():
             log("WARNING: unable to parse HSDC Default_controls.ini: %r" % exc)
     if not board:
         raise AutomationError("HSDC persisted Board Name is empty")
+    if device == "AFE58JD48_120M_8L_MANUAL":
+        raise AutomationError(
+            "Known-bad HSDC profile selected: AFE58JD48_120M_8L_MANUAL uses JESD M=5. "
+            "Select AFE58JD48_120M_8L_M16_FIXED, reload the device INI, and recapture."
+        )
     if device != HSDC_AFE_RX_DEVICE:
         raise AutomationError(
             "HSDC GUI selected device is %r, expected %r. Select the correct AFE RX profile first." % (

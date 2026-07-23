@@ -10,7 +10,7 @@
 | AFE58JD48EVM User Guide `SLOU521` | `<workspace>\AFE58JD48EVM_User_Guide__SLOU521_.pdf` | SMA、J25、JESD、AFE/LMK GUI |
 | TX7316 EVM GUI | `E:\Program Files (x86)\Texas Instruments\TX7316 EVM` | TX配置和32-bit Device GUI接口 |
 | HSDC Pro 5.31 | `E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro`及`E:\Program Files\Texas Instruments\High Speed Data Converter Pro` | TSW14J50捕獲與Automation DLL |
-| HSDC ADC profiles | `E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files` | `AFE58JD48_120M_8L_MANUAL.ini`安裝位置 |
+| HSDC ADC profiles | `E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files` | `AFE58JD48_120M_8L_M16_FIXED.ini`安裝位置 |
 | TX7316 CPLD工程 | `%USERPROFILE%\Texas Instruments\TX7316CPLDFW-1.0` | Quartus工程、Sync_Gen/TR_Gen/Pat_Gen源碼與POF |
 
 ## TX7316CPLDFW-1.0是什麼
@@ -32,7 +32,7 @@
 
 ## 倉庫配置的來源
 
-- `configs/hsdc/AFE58JD48_120M_8L_MANUAL.ini`：從上述ADC files目錄複製的本機已驗證profile。
+- `configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini`：修正JESD converter count為M=16的profile；舊MANUAL/M=5文件不再分發。
 - `configs/tx7316/1MHz_5pulses.cfg`：從TX7316 EVM安裝包Quick Start/Internal目錄複製。
 
 兩者都是可追溯快照。當TI版本升級時，先比較diff、重做JESD/頻譜驗收，再替換倉庫版本。

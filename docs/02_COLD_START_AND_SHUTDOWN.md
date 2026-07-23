@@ -30,7 +30,7 @@
 5. 右鍵以管理員啟動HSDC Pro，連接TSW14J50 `TIAOPCAW`。
 6. 啟動AFE GUI並依序：`DUT RESET → INITIALIZE LMK → AFE RESET → INITIALIZE AFE`。
 7. AFE初值：Analog Input、120M 8L Subclass1、LNA 15 dB、PGA 18 dB、LPF 20 MHz、VCAT Min Gain/最大衰減、Active Termination Disable。
-8. HSDC選 `AFE58JD48_120M_8L_MANUAL`，確認120M、Normal trigger、average/continuous/stream-to-file全OFF。
+8. HSDC選`AFE58JD48_120M_8L_M16_FIXED`，確認120M、Normal trigger、average/continuous/stream-to-file全OFF。不要選`MANUAL`；它的JESD M=5會造成通道重複/錯位。
 9. 先做一次1024或4096 samples的手動Capture；必須沒有timeout，基線約在mid-code且不削頂。
 
 ## D. 載入1 MHz TX preset
