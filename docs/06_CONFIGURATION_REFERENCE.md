@@ -18,6 +18,10 @@ E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Det
 
 倉庫文件：`configs/tx7316/1MHz_5pulses.cfg`
 
+注意：這是TI安裝包的原始文件名；其`REPEAT_COUNT=3`代表pattern總共執行4次，因此是4個聲學週期。SBOU224A的Quick Setup也稱它為`Internal: 1 MHz, 4 pulses`。
+
+這個cfg不是0度成像的完整preset：Profile 0的A1-A8延時為`[0,10,20,30,40,50,60,70]`，且最後寫`Reg24=0x02000003`啟用`TX_BF_MODE`。載入後先關閉BF；自動採集腳本會按角度覆寫delay profile，手動0度測試則須把八路延時全部設0。Pattern/Delay寫入後仍要脈衝Register 0 bit3 `LOAD_PROF`並確認自清零。
+
 目前TI安裝包來源：
 
 ```text

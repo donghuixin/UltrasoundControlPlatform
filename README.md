@@ -61,7 +61,7 @@ HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd
 - 把 [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 複製到：
   `E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files`
 - 不使用`AFE58JD48_120M_8L_MANUAL`：該舊文件的`JESD IP Core_M=5`，與16通道輸出不一致；`M16_FIXED`使用`M=16`。
-- TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。它是目前 TI EVM 安裝包中的 preset 快照；載入後仍須核對實際輸出頻譜、週期數、Reg24/Reg25 與 CW OFF。
+- TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。它是目前 TI EVM 安裝包中的原始文件名；實際配置為`REPEAT_COUNT=3`，即4個聲學週期，與SBOU224A的`Internal: 1 MHz, 4 pulses`一致。載入後仍須核對實際輸出頻譜、Reg24/Reg25 與 CW OFF。
 - 第一次啟動 UI 會讀取 `collector_config.example.json`，退出時把本機設置寫入被 Git 忽略的 `collector_config.json`。
 
 若 TI 軟件安裝位置不同，可在啟動採集前設置：

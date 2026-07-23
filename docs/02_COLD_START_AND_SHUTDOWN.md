@@ -36,7 +36,10 @@
 ## D. 載入1 MHz TX preset
 
 1. TX GUI `TX_BF_MODE=OFF`。
-2. 載入 `configs/tx7316/1MHz_5pulses.cfg`，或在Quick Setup選對應 Internal 1MHz preset。
+2. 載入 `configs/tx7316/1MHz_5pulses.cfg`，或在Quick Setup選`Internal: 1 MHz, 4 pulses`。TI文件名雖含`5pulses`，實際`REPEAT_COUNT=3`會輸出4個聲學週期。
+3. 立即回到Device Configuration取消`TX_BF_MODE`，並確認CW全關。該TI cfg最後寫`Reg24=0x02000003`，bit0會啟用內部BF；GUI左下角`Idle`只表示SPI操作結束，不表示停止發射。
+4. 此cfg的Profile 0延時為A1-A8=`[0,10,20,30,40,50,60,70]`，不是0度。自動角度採集會覆寫這些值；若只做手動0度試拍，須把A1-A8全部改為0。
+5. 在Pattern Profile點`Write to Device`，在Delay Profile修改後也點`Write to Device`；最後在Register 0把`LOAD_PROF`寫1，等待自清零並回到`Idle`。
 3. 等左下角 `Idle`。
 4. `Read All`核對：Reg24先為`0x02000002`（BF off），Reg25約`0x00000246`，Pattern Profile 0為配置快照中的0x60–0x64。
 5. 不把HSDC `Target Frequency=1M`當作頻率已改；真正驗證靠採集後回波/串擾的頻譜峰值。
