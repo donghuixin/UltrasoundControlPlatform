@@ -17,6 +17,8 @@
 
    `Run_HKUST_BioData_Collector_as_admin.cmd`
 
+採集命令窗已關閉QuickEdit選取暫停功能，鼠標點擊不會再讓Python看似卡死；旋轉符號與`alive, elapsed`是API心跳，BIN保存時同時顯示MB和百分比。只有心跳停止且窗口沒有「選擇/Select」前綴時才按錯誤流程排查，不要用`Ctrl+C`作為API繼續按鈕。
+
 GUI 使用目前 PATH 中的 Python 3；硬件採集固定調用 `C:\Python27\python.exe`，因為 TX7316 Device GUI DLL 是32-bit。
 
 界面啟動時會啟用 Windows Per-Monitor DPI Awareness v2；所有界面文字使用 Segoe UI / Cascadia Mono 的 TrueType 矢量字體，不再由 Windows 將整個窗口作低解析度位圖拉伸。

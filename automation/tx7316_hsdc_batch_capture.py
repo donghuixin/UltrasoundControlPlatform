@@ -115,6 +115,7 @@ import math
 import os
 import struct
 import sys
+import threading
 import time
 
 
@@ -245,6 +246,87 @@ def is_windows_admin():
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def disable_console_quick_edit():
+    """Prevent a mouse click/selection from pausing the acquisition process.
+
+    Windows legacy consoles enable QuickEdit by default.  While text is selected
+    the console title is prefixed with "Select" (or the localized equivalent)
+    and the attached process is suspended.  This previously looked exactly like
+    a blocked HSDC/TX API call.  Keep extended flags enabled while clearing only
+    the QuickEdit bit so normal keyboard input and Ctrl+C handling still work.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        std_input_handle = -10
+        enable_quick_edit_mode = 0x0040
+        enable_extended_flags = 0x0080
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(std_input_handle)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        new_mode = (mode.value | enable_extended_flags) & ~enable_quick_edit_mode
+        return bool(kernel32.SetConsoleMode(handle, ctypes.c_uint32(new_mode)))
+    except Exception:
+        return False
+
+
+class ConsoleHeartbeat(object):
+    """Show that a blocking vendor API call is alive without touching hardware."""
+
+    def __init__(self, label, progress_path=None, expected_bytes=None, interval=1.0):
+        self.label = label
+        self.progress_path = progress_path
+        self.expected_bytes = expected_bytes
+        self.interval = interval
+        self.started = time.time()
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.printed = False
+        self.max_width = 0
+
+    def start(self):
+        self.thread = threading.Thread(target=self._run)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def _run(self):
+        frames = "|/-\\"
+        frame_index = 0
+        while not self.stop_event.wait(self.interval):
+            elapsed = time.time() - self.started
+            progress = ""
+            if self.progress_path and os.path.exists(self.progress_path):
+                try:
+                    size = os.path.getsize(self.progress_path)
+                    if self.expected_bytes:
+                        percent = min(100.0, 100.0 * size / float(self.expected_bytes))
+                        progress = " file %.1f/%.1f MB (%5.1f%%)" % (
+                            size / 1e6, self.expected_bytes / 1e6, percent,
+                        )
+                    else:
+                        progress = " file %.1f MB" % (size / 1e6)
+                except OSError:
+                    pass
+            text = "[%s] %s: alive, elapsed %.1f s%s" % (
+                frames[frame_index % len(frames)], self.label, elapsed, progress,
+            )
+            frame_index += 1
+            self.max_width = max(self.max_width, len(text))
+            sys.stdout.write("\r" + text.ljust(self.max_width))
+            sys.stdout.flush()
+            self.printed = True
+
+    def stop(self):
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(1.5)
+        if self.printed:
+            sys.stdout.write("\r" + (" " * self.max_width) + "\r")
+            sys.stdout.flush()
 
 
 def require_32bit_python():
@@ -741,9 +823,22 @@ class HSDCController(object):
         except Exception as exc:
             return "unable to read HSDC error text: %s" % exc
 
-    def call(self, name, *args):
+    def call(self, name, *args, **kwargs):
+        progress_path = kwargs.pop("progress_path", None)
+        expected_bytes = kwargs.pop("expected_bytes", None)
+        if kwargs:
+            raise TypeError("Unexpected HSDC call options: %r" % sorted(kwargs.keys()))
         function = getattr(self.dll, name)
-        code = int(function(*args))
+        heartbeat = ConsoleHeartbeat(
+            "HSDC " + name,
+            progress_path=progress_path,
+            expected_bytes=expected_bytes,
+        )
+        heartbeat.start()
+        try:
+            code = int(function(*args))
+        finally:
+            heartbeat.stop()
         if code != 0:
             raise AutomationError("HSDC %s failed, code=%d: %s" % (
                 name, code, self.error_text()))
@@ -833,11 +928,13 @@ class HSDCController(object):
         else:
             raise AutomationError("Unknown trigger mode: " + trigger_mode)
 
-    def save_binary(self, path):
+    def save_binary(self, path, expected_bytes=None):
         self.call(
             "ADC_Save_Raw_Data_As_Binary_File",
             ctypes.c_char_p(self._bytes(os.path.abspath(path))),
             ctypes.c_int32(self.timeout_ms),
+            progress_path=path,
+            expected_bytes=expected_bytes,
         )
 
 
@@ -985,6 +1082,10 @@ def apply_runtime_array_configuration(args):
 def main(argv=None):
     global LOG_HANDLE
     args = make_parser().parse_args(argv)
+    if disable_console_quick_edit():
+        print("Console QuickEdit disabled: mouse clicks can no longer pause acquisition.")
+    else:
+        print("WARNING: unable to disable Console QuickEdit; do not click inside the acquisition console.")
     # 沒寫模式時，默認安全的 Dry Run。
     if not args.capture:
         args.dry_run = True
@@ -1155,8 +1256,9 @@ def main(argv=None):
                     log("=" * 72)
                     log("CAPTURE PROGRESS %d/%d: sequence %02d -> batch %02d/P%02d, angle %+.2f deg" % (
                         capture_ordinal, capture_total, profile_number,
-                        batch_number + 1, hardware_profile_number, angle))
+                            batch_number + 1, hardware_profile_number, angle))
 
+                    log("Preparing TX profile with internal BF forced OFF...")
                     # 嚴格複製人工 GUI 操作順序：改延時/LOAD_PROF 時保持 BF 關閉。
                     tx.set_internal_bf(False)
                     tx.select_g1_profile(hardware_profile_number)
@@ -1187,7 +1289,7 @@ def main(argv=None):
                         "Saving 33.5 MB HSDC raw BIN; this TI API may take 30-60 seconds. "
                         "Do not close the window or click the GUIs..."
                     )
-                    hsdc.save_binary(path)
+                    hsdc.save_binary(path, expected_file_bytes)
                     finished = utc_now_text()
                     actual_bytes = os.path.getsize(path)
                     if actual_bytes != expected_file_bytes:
@@ -1257,8 +1359,12 @@ def main(argv=None):
                     tx.pulse_load_profile()
                     restored.append("Reg22/profile selection")
                 if original_reg24 is not None:
-                    tx.write_verified("GLOBAL", 0x18, original_reg24)
-                    restored.append("Reg24/TX_BF_MODE")
+                    # Never re-enable high-voltage pulsing during automatic cleanup,
+                    # even if TX_BF_MODE happened to be ON before the run.  Restore
+                    # every other Reg24 field but force bit 0 OFF; a later transmit
+                    # must always be an explicit user action/new capture step.
+                    tx.write_verified("GLOBAL", 0x18, original_reg24 & ~0x1)
+                    restored.append("Reg24 restored with TX_BF_MODE forced OFF")
                 if restored:
                     log("TX state restored: " + ", ".join(restored))
             except Exception as restore_exc:

@@ -54,6 +54,8 @@ python -m unittest discover -s tests -v
 HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd
 ```
 
+正式採集命令窗會禁用Windows Console QuickEdit，避免點擊/拖選文字後整個程序被系統暫停。HSDC阻塞調用會顯示旋轉心跳、已等待時間；保存BIN時另顯示文件大小和百分比。看到心跳持續更新即代表程序仍在運行，不要用`Ctrl+C`催促API。
+
 在 UI 中先做 `Dry run`。真實採集由 UI 啟動 32-bit Python 2.7 腳本；TX7316 GUI、HSDC Pro 與採集腳本必須保持相同的管理員權限。
 
 ## 配置安裝
