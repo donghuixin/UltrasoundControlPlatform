@@ -1,0 +1,36 @@
+# Raw acquisitions and generated analysis are intentionally never versioned.
+auto_runs/
+**/auto_runs/
+capture_*/
+comparison_*/
+analysis/
+**/analysis/
+*.bin
+*.npy
+*.npz
+*.mat
+*.csv
+*.log
+*.tmp
+
+# Local runtime state. The committed example is the reproducible baseline.
+HKUST_BioData_Collector/collector_config.json
+*.local.json
+
+# Python / test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Generated plots and editor/OS state
+*.png
+*.svg
+*.jpg
+*.jpeg
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
