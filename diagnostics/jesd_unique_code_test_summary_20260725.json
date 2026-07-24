@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-07-25",
+  "system": {
+    "afe": "AFE58JD48EVM",
+    "capture_board": "TSW14J50",
+    "hsdc_version": "5.31",
+    "firmware_family": "TSW14J50RX_FIRMWARE",
+    "sample_rows_per_test": 65536,
+    "output_columns": 16,
+    "test_source": "distinct constant digital code per AFE converter"
+  },
+  "tests": [
+    {
+      "id": "matched_s1_k8_custom_m16",
+      "afe_subclass": 1,
+      "afe_k": 8,
+      "hsdc_m_field": 16,
+      "pass": false
+    },
+    {
+      "id": "matched_s2_k8_custom_m16",
+      "afe_subclass": 2,
+      "afe_k": 8,
+      "hsdc_m_field": 16,
+      "pass": false
+    },
+    {
+      "id": "ti_installed_original_s1_k8",
+      "afe_subclass": 1,
+      "afe_k": 8,
+      "hsdc_m_field": 5,
+      "pass": false
+    }
+  ],
+  "common_result": {
+    "raw_bin_sha256": "141E592D1631CDC19D42680BE18477E1EB12A6E84627D3F3DC3B2ACF60EBCED3",
+    "all_columns_stable": true,
+    "distinct_modal_code_count": 12,
+    "bit_exact_duplicate_groups_1_based": [[3, 5], [4, 6], [9, 15], [10, 16]],
+    "missing_afe_channels_1_based": [3, 4, 15, 16],
+    "observed_hsdc_to_afe_mapping_1_based": [1, 2, 5, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 9, 10]
+  },
+  "acceptance_required": {
+    "bit_exact_duplicate_groups_1_based": [],
+    "distinct_modal_code_count": 16,
+    "all_columns_stable": true,
+    "each_expected_afe_code_seen_exactly_once": true
+  },
+  "raw_data_committed": false
+}

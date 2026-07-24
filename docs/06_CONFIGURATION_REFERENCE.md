@@ -10,9 +10,9 @@
 E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files
 ```
 
-關鍵內容：16 channels、16 bits、120 MSPS、JESD L=8/M=16/F=4/K=8/N=16/Subclass1，以及目前的lane mapping。複製後重啟HSDC Pro，在AFE RX下拉選同名profile；若timeout，重新初始化AFE LMK/JESD並確認D3/D4狀態。
+關鍵內容：16 output columns、16 bits、120 MSPS、候選 JESD L=8/M=16/F=4/K=8/N=16/Subclass1，以及目前的lane mapping。它是實驗配置，不是已驗證基線。複製後重啟HSDC Pro，在AFE RX下拉選同名profile；若timeout，重新初始化AFE LMK/JESD並確認D3/D4狀態。
 
-禁止使用舊`AFE58JD48_120M_8L_MANUAL.ini`。它把`JESD IP Core_M`寫成5；歷史run均用該文件，並穩定出現`[3,5] [4,6] [9,15] [10,16]`完全重複通道。`M16_FIXED`修正的是數字transport解包；仍須逐SMA單通道注入完成最終映射驗收。
+不要把`JESD IP Core_M`的數字直接當成公開 JESD literal M。2026-07-25 已分別測試 repository `M16_FIXED`、matched S2/M16 和 TI 安裝包原始 `M=5` profile；三者輸出 BIN 完全相同，均有 `[3,5] [4,6] [9,15] [10,16]` 逐位重複。故障很可能位於 TSW14J50/HSDC 的 firmware INI/去幀表，且 TI E2E 有完全相同的已知案例。現階段沒有任何 profile 可稱為 validated；必須取得 TI 修復文件並通過16個唯一數位碼驗收。完整證據見 `docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md`。
 
 ## TX7316 1 MHz preset
 

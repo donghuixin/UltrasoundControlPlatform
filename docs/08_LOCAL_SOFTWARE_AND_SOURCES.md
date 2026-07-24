@@ -32,7 +32,7 @@
 
 ## 倉庫配置的來源
 
-- `configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini`：修正JESD converter count為M=16的profile；舊MANUAL/M=5文件不再分發。
+- `configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini`：使用 literal M=16 的實驗 profile，不是已修復基線。2026-07-25 的唯一數位碼測試顯示它、matched S2/M16 與 TI 安裝包原始 M=5 profile 都產生相同四組複製通道；必須等待 TI 更新的 TSW14J50 firmware INI/firmware，並以 `automation/jesd_transport_qa.py` 做 16/16 驗收。詳見 `docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md`。
 - `configs/tx7316/1MHz_5pulses.cfg`：從TX7316 EVM安裝包Quick Start/Internal目錄複製。
 
 兩者都是可追溯快照。當TI版本升級時，先比較diff、重做JESD/頻譜驗收，再替換倉庫版本。

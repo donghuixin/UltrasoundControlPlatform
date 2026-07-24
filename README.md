@@ -24,6 +24,9 @@
 9. [本機TI軟件、CPLD工程與資料來源](docs/08_LOCAL_SOFTWARE_AND_SOURCES.md)
 10. [1.59 mm 陣列、柵瓣與超分辨率思路](automation/ARRAY_1P59MM_AND_SUPERRESOLUTION.md)
 11. [2026-07-24 採集與重建軟件更新](docs/09_RECENT_SOFTWARE_UPDATES.md)
+12. [通道QA、成像失敗原因與三級排查](docs/10_CHANNEL_QA_AND_IMAGING_DIAGNOSIS.md)
+13. [JESD 通道複製故障報告與三組閉環證據](docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md)
+14. [可直接交給 Opus 的 JESD 去幀求助包](docs/12_OPUS_HELP_REQUEST_JESD_DEFRAMING.md)
 
 ## 目前硬件基線
 
@@ -61,9 +64,8 @@ HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd
 
 ## 配置安裝
 
-- 把 [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 複製到：
-  `E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files`
-- 不使用`AFE58JD48_120M_8L_MANUAL`：該舊文件的`JESD IP Core_M=5`，與16通道輸出不一致；`M16_FIXED`使用`M=16`。
+- [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 與 S2 版本都是實驗 profile，**目前沒有任何一份通過 16/16 唯一碼 Gate**，不可稱為已修復配置。
+- 2026-07-25 的 matched S1/K8、matched S2/K8 和 TI 安裝包原始 S1 profile 均穩定出現 `3=5、4=6、9=15、10=16`。三份 BIN 位元級完全相同；詳見 [故障報告](docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md)。下一步是向 TI 索取已修復的 TSW14J50 firmware INI/firmware，而不是繼續猜 `M` 或 Subclass。
 - TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。自動採集現已支持1、1.5、2、2.5、4 MHz白名單pattern寫入與寄存器回讀；回讀不匹配時Fail Closed。載入任何cfg後仍須確認`TX_BF_MODE`與CW OFF。
 - 第一次啟動 UI 會讀取 `collector_config.example.json`，退出時把本機設置寫入被 Git 忽略的 `collector_config.json`。
 
@@ -82,6 +84,7 @@ automation/                    TX7316/HSDC 控制、診斷和批量採集
 HKUST_BioData_Collector/       Python 3 桌面 UI、模型和測試
 configs/hsdc/                  HSDC Pro ADC/JESD profile
 configs/tx7316/                TX7316 1 MHz preset
+diagnostics/                   去識別化 QA 摘要（不含 raw BIN）
 docs/                          硬件和操作文檔
 reconstruct_ultrasound.py      HSDC BIN 離線分析與成像
 auto_runs/                     本機採集輸出；不會提交到 Git
