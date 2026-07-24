@@ -11,10 +11,10 @@ TX7316 + AFE58JD48 + TSW14J50/HSDC Pro 批量角度採集腳本
 1. 本腳本以目前的 8 個發射陣元 A1-A8 為基礎：
    - 中心間距 pitch = 1.59 mm
    - 單陣元尺寸 = 1.0 mm x 1.0 mm x 0.4 mm
-   - 預設中心頻率 = 1 MHz（必須先在TX GUI載入同頻Pattern）
+   - 預設中心頻率 = 2.5 MHz
 2. 預設掃描角為 -10, -8, ..., +10 度，共 11 個角度。亦支持 1 度步進的21角度掃描；
    TX7316一次只有16個 Delay Profile，因此腳本會在 TX_BF_MODE 關閉時自動分成16+5兩批重寫。
-3. 1.59 mm 在1 MHz下約為1.03 lambda，仍可能產生柵瓣；更高頻率時更嚴重。
+3. 1.59 mm 在 2.5 MHz 下約為 2.58 lambda，必然產生柵瓣；腳本會計算並顯示警告。
    建議日常只用 +/-8 度，+/-10 度只作實驗上限，並把重建顯示視場限制在 +/-10 度。
 4. 這不是醫療設備。腳本只用於凝膠/水槽/仿體，不得直接用於人體。
 5. 腳本不改變 J1/J2/J3 電源，也不改寫高壓幅值和 Pattern Profile 波形。
@@ -24,9 +24,9 @@ TX7316 + AFE58JD48 + TSW14J50/HSDC Pro 批量角度採集腳本
 1. TX7316 J7 的 A1-A8 高壓輸出接線性陣列對應的 8 個陣元；公共電極接系統模擬地。
 2. TX7316 J5 的 RX_A1-RX_A8 接 AFE58JD48 的對應 SMA 輸入；兩板 AGND 短接。
 3. AFE58JD48 與 TSW14J50 通過 FMC/JESD 連接。
-4. 無硬件觸發時，J7 pin 2、AFE J25、TSW J13仍可留空；但這只能做“非相干/軟對齊”採集。
-   原板1 kHz硬件起始觸發可把J7 pin2 SYNCP輸出接TSW J13；J7不是外部PRF輸入口。
-5. TX7316 GUI 中先人工設定好 Pattern Profile 0：1 MHz、短脈衝、低 PRF起步，CW必須關閉。
+4. 無硬件觸發時，J7 pin 2、AFE J25、TSW J13 仍可留空；但這只能做“非相干/軟對齊”採集。
+   若要真正相干的多角度平面波複合，必須用同一個有緩衝和電平轉換的觸發源同步 TX 與 TSW。
+5. TX7316 GUI 中先人工設定好 Pattern Profile 0：2.5 MHz、短脈衝、低 PRF 起步，CW 必須關閉。
 6. AFE GUI 中完成 LMK/AFE 初始化；選 Analog Input、120M 8L Subclass 1、Active Termination Disable，
    第一次採集先用較低增益，確認 ADC 不削頂後再增加。
 
@@ -50,14 +50,14 @@ TX7316 + AFE58JD48 + TSW14J50/HSDC Pro 批量角度採集腳本
 【4. 先做完全不接觸硬件的 Dry Run】
 在管理員 CMD 中：
 
-  C:\\Python27\\python.exe automation\\tx7316_hsdc_batch_capture.py --dry-run
+  "C:\\Python27\\python.exe" "E:\\Users\\dxhui\\Desktop\\TI_AFE58jd48\\UltrasoundImagingData_Capture\\automation\\tx7316_hsdc_batch_capture.py" --dry-run
 
 Dry Run 會列出每個角度的 8 路延時、量化後角度、相鄰陣元相位差和柵瓣位置，不會連 GUI、不會發射、不會建文件。
 
 【5. 正式批量採集】
 確認凝膠、探頭、接收增益與 TX 電源後，在管理員 CMD 中：
 
-  C:\\Python27\\python.exe automation\\tx7316_hsdc_batch_capture.py --capture --enable-internal-bf
+  "C:\\Python27\\python.exe" "E:\\Users\\dxhui\\Desktop\\TI_AFE58jd48\\UltrasoundImagingData_Capture\\automation\\tx7316_hsdc_batch_capture.py" --capture --enable-internal-bf
 
 預設行為：
 1. 計算並寫入 Profile 0-10；P0=-10 度，P5=0 度，P10=+10 度。
@@ -97,7 +97,7 @@ Dry Run 會列出每個角度的 8 路延時、量化後角度、相鄰陣元相
 
 【7. 本腳本刻意不自動修改的項目】
 1. TX7316 的高壓電源和 5-level 電壓；
-2. Pattern Profile 的1 MHz波形、脈衝週期數、PRF；
+2. Pattern Profile 的 2.5 MHz 波形、脈衝週期數、PRF；
 3. AFE 的 LNA/PGA/TGC 增益；
 4. 人體安全參數。
 
@@ -109,6 +109,7 @@ import array
 import ConfigParser
 import ctypes
 import datetime
+import hashlib
 import imp
 import json
 import math
@@ -131,52 +132,17 @@ TX_GUI_APPLICATION_CANDIDATES = [
 ]
 TX_GUI_PORT = float("nan")
 TX_GUI_PORT_LABEL = "NaN (local ActiveX)"
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPOSITORY_ROOT = os.path.dirname(SCRIPT_DIR)
+TX_PYTHON_MODULE = r"E:\Program Files (x86)\Texas Instruments\TX7316 EVM\Scripts\TX7316 EVM.py"
 
-
-def first_existing_path(environment_name, candidates):
-    """Return an environment override or the first installed candidate.
-
-    The laboratory computer uses an E: installation, while a standard TI
-    installation normally uses C:.  Keeping both candidates makes a clone of
-    this repository usable without editing source code.
-    """
-    override = os.environ.get(environment_name)
-    if override:
-        return os.path.abspath(override)
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-    return candidates[0]
-
-
-TX_PYTHON_MODULE = first_existing_path(
-    "TX7316_EVM_PYTHON_MODULE",
-    [
-        r"E:\Program Files (x86)\Texas Instruments\TX7316 EVM\Scripts\TX7316 EVM.py",
-        r"C:\Program Files (x86)\Texas Instruments\TX7316 EVM\Scripts\TX7316 EVM.py",
-    ],
-)
-
-HSDC_DLL = first_existing_path(
-    "HSDCPRO_AUTOMATION_DLL",
-    [
-        r"E:\Program Files\Texas Instruments\High Speed Data Converter Pro\HSDCPro Automation DLL\32Bit DLL\HSDCProAutomation.dll",
-        r"C:\Program Files\Texas Instruments\High Speed Data Converter Pro\HSDCPro Automation DLL\32Bit DLL\HSDCProAutomation.dll",
-        r"C:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\HSDCPro Automation DLL\32Bit DLL\HSDCProAutomation.dll",
-    ],
-)
+HSDC_DLL = r"E:\Program Files\Texas Instruments\High Speed Data Converter Pro\HSDCPro Automation DLL\32Bit DLL\HSDCProAutomation.dll"
 HSDC_BOARD_SERIAL = "TIAOPCAW"
 HSDC_AFE_RX_DEVICE = "AFE58JD48_120M_8L_M16_FIXED"
 HSDC_DEFAULT_CONTROLS_INI = r"C:\Users\Public\Documents\Texas Instruments\High Speed Data Converter Pro\Default_controls.ini"
 
-DEFAULT_OUTPUT_ROOT = os.environ.get(
-    "ULTRASOUND_OUTPUT_ROOT", os.path.join(REPOSITORY_ROOT, "auto_runs")
-)
+DEFAULT_OUTPUT_ROOT = r"E:\Users\dxhui\Desktop\TI_AFE58jd48\UltrasoundImagingData_Capture\auto_runs"
 
 SOUND_SPEED_M_S = 1540.0
-CENTER_FREQUENCY_HZ = 1.0e6
+CENTER_FREQUENCY_HZ = 2.5e6
 ADC_SAMPLE_RATE_HZ = 120e6
 SAMPLES_PER_CHANNEL = 1048576
 RX_CHANNELS_IN_FILE = 16
@@ -202,6 +168,66 @@ RECOMMENDED_ROUTINE_STEER_DEG = 8.0
 HSDC_DEFAULT_TIMEOUT_MS = 120000
 
 LOG_HANDLE = None
+
+
+# Known, finite B-mode patterns derived from the already-used 1 MHz tapered
+# five-level profile.  The level sequence is unchanged; only the duration of
+# each transition changes.  TX7316 holds a transition for PER+2 divided
+# pattern clocks (datasheet section 8.3.4.3.1.2).  CLK_DIV remains zero, so the
+# pattern clock is 200 MHz.  REPEAT_COUNT=3 and TAIL_COUNT=9 match the existing
+# 1MHz_5pulses.cfg setup.  The 1.5 and 2 MHz entries keep the same symmetric
+# five-level sequence and change duration fields only; their sums are 134 and
+# 100 pattern clocks, respectively.  These are deliberately the only
+# frequencies that --program-known-pattern accepts; arbitrary high-voltage
+# patterns are refused.
+KNOWN_PATTERN_PROFILES = {
+    1.0: {
+        "name": "tapered_1MHz_reference",
+        "register25": 0x00000246,
+        "registers": [
+            0x839A836E, 0x836D836E, 0x836D8399, 0x00000007,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        ],
+        "nominal_base_pattern_hz": 200000000.0 / 210.0,
+    },
+    1.5: {
+        "name": "tapered_1p5MHz_scaled",
+        "register25": 0x00000246,
+        "registers": [
+            0x4B624B46, 0x4B454B46, 0x4B454B61, 0x00000007,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        ],
+        # 134 integer pattern clocks is the nearest symmetric realization.
+        "nominal_base_pattern_hz": 200000000.0 / 134.0,
+    },
+    2.0: {
+        "name": "tapered_2MHz_scaled",
+        "register25": 0x00000246,
+        "registers": [
+            0x33423336, 0x33353336, 0x33353341, 0x00000007,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        ],
+        "nominal_base_pattern_hz": 2000000.0,
+    },
+    2.5: {
+        "name": "tapered_2p5MHz_scaled",
+        "register25": 0x00000246,
+        "registers": [
+            0x2B2A2B26, 0x2B252B26, 0x2B252B29, 0x00000007,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        ],
+        "nominal_base_pattern_hz": 2500000.0,
+    },
+    4.0: {
+        "name": "tapered_4MHz_scaled",
+        "register25": 0x00000246,
+        "registers": [
+            0x131A1316, 0x13151316, 0x13151319, 0x00000007,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        ],
+        "nominal_base_pattern_hz": 4000000.0,
+    },
+}
 
 
 class AutomationError(RuntimeError):
@@ -238,6 +264,16 @@ def parse_angles(text):
             "at most %d sweep angles are allowed; hardware profiles are loaded in batches of 16"
             % MAX_SWEEP_ANGLES
         )
+    return values
+
+
+def parse_rx_channels(text):
+    try:
+        values = [int(token.strip()) for token in text.split(",") if token.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError("RX channels must be comma-separated integers")
+    if not values:
+        raise argparse.ArgumentTypeError("RX channels cannot be empty")
     return values
 
 
@@ -347,6 +383,106 @@ def json_write_atomic(path, value):
     if os.path.exists(path):
         os.remove(path)
     os.rename(tmp, path)
+
+
+def write_bytes_atomic(path, payload):
+    """Write a small reproducibility artifact without exposing a partial file."""
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if os.path.exists(path):
+        os.remove(path)
+    os.rename(tmp, path)
+
+
+def cfg_line(block, address, value):
+    return "%s|0x%X\t0x%08X\r\n" % (
+        block, int(address), int(value) & 0xffffffff,
+    )
+
+
+def save_verified_tx_cfg_files(
+    run_dir, report, profile_batches, original_reg22, active_reg24,
+    active_reg25, waveform_readback, requested_frequency_mhz,
+):
+    """Save standalone, GUI-loadable CFG snapshots for every profile batch.
+
+    TX7316 exposes only sixteen delay-profile slots.  A 21-angle sweep therefore
+    has two different hardware states.  Saving one merged CFG would be
+    misleading, so the capture folder receives one loadable CFG per batch.  The
+    final GLOBAL 0x18 write always leaves TX_BF_MODE off; transmitting remains an
+    explicit later action.
+    """
+    pattern_values = [int(text, 16) for text in waveform_readback["registers"][:8]]
+    profile_slot_state = {}
+    artifacts = []
+    frequency_token = ("%.3f" % requested_frequency_mhz).rstrip("0").rstrip(".")
+    frequency_token = frequency_token.replace(".", "p")
+
+    for batch_number, batch_profiles in enumerate(profile_batches):
+        for profile in batch_profiles:
+            slot = int(profile["hardware_profile_number"])
+            profile_slot_state[slot] = {
+                int(address_text, 16): int(value_text, 16)
+                for address_text, value_text in profile["registers"].items()
+            }
+
+        first_angle = batch_profiles[0]["requested_angle_deg"]
+        last_angle = batch_profiles[-1]["requested_angle_deg"]
+        filename = "TX7316_%sMHz_batch%02d_verified.cfg" % (
+            frequency_token, batch_number + 1,
+        )
+        path = os.path.join(run_dir, filename)
+        lines = []
+        # Match the vendor Quick Start scripts, but never enable TX_BF_MODE.
+        lines.append(cfg_line("GLOBAL", 0x06, 0x00000010))
+        lines.append(cfg_line("GLOBAL", 0x0F, 0x00000010))
+        lines.append(cfg_line("GLOBAL", 0x18, int(active_reg24) & ~0x1))
+        for offset, value in enumerate(pattern_values):
+            lines.append(cfg_line("PATTERN-PROFILE", 0x60 + offset, value))
+        for slot in sorted(profile_slot_state):
+            for address, value in sorted(profile_slot_state[slot].items()):
+                lines.append(cfg_line("DELAY-PROFILE", address, value))
+        # Select profile 0, pulse LOAD_PROF, then restore Repeat/Tail because the
+        # EVM GUI load path can overwrite the low fields of Register 25.
+        lines.append(cfg_line("GLOBAL", 0x16, int(original_reg22) & 0x0fffffff))
+        lines.append(cfg_line("GLOBAL", 0x00, 0x00000008))
+        lines.append(cfg_line("GLOBAL", 0x19, active_reg25))
+        lines.append(cfg_line("GLOBAL", 0x18, int(active_reg24) & ~0x1))
+        payload = "".join(lines).encode("ascii")
+        write_bytes_atomic(path, payload)
+        artifacts.append({
+            "filename": filename,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "profile_batch_number": batch_number,
+            "captured_sequence_numbers": [
+                int(profile["profile_number"]) for profile in batch_profiles
+            ],
+            "captured_angles_deg": [
+                float(profile["requested_angle_deg"]) for profile in batch_profiles
+            ],
+            "first_angle_deg": float(first_angle),
+            "last_angle_deg": float(last_angle),
+            "tx_bf_mode_saved_off": True,
+        })
+
+    index_path = os.path.join(run_dir, "TX7316_verified_cfg_index.json")
+    index = {
+        "requested_frequency_mhz": float(requested_frequency_mhz),
+        "pattern_reference": waveform_readback.get("reference_name"),
+        "pattern_nominal_base_hz": waveform_readback.get("nominal_base_pattern_hz"),
+        "register25": "0x%08X" % (int(active_reg25) & 0xffffffff),
+        "profile_capacity_per_cfg": HARDWARE_DELAY_PROFILES_PER_BATCH,
+        "reason_for_multiple_cfg_files": (
+            "21 angles exceed the 16 hardware delay-profile slots; batch 2 "
+            "reuses slots P00-P04."
+        ),
+        "cfg_files": artifacts,
+    }
+    json_write_atomic(index_path, index)
+    return artifacts
 
 
 def nearest_existing_directory(path):
@@ -740,6 +876,115 @@ class TX7316Controller(object):
             )
         return reg24
 
+    def snapshot_pattern_profile(self, profile_number, reg24, reg25):
+        """Read back one 5-level pattern profile and decode its transition timing."""
+        if not (0 <= profile_number <= 15):
+            raise AutomationError("Pattern profile number must be 0..15")
+        base = 0x60 + 8 * profile_number
+        # Always read all eight words for bit-for-bit safety verification.
+        # Decoding may stop at LVL=7, but the unused trailing words still have
+        # to match the qualified reference (normally all zeros).
+        registers = [
+            self.read("PATTERN-PROFILE", base + offset) for offset in range(8)
+        ]
+        transitions = []
+        ended = False
+        for value in registers:
+            for byte_index in range(4):
+                encoded = (value >> (8 * byte_index)) & 0xff
+                level = encoded & 0x7
+                period_field = (encoded >> 3) & 0x1f
+                transitions.append({
+                    "transition": len(transitions) + 1,
+                    "level_code": level,
+                    "period_field": period_field,
+                    "duration_pattern_clocks": period_field + 2,
+                })
+                if level == 7:
+                    ended = True
+                    break
+            if ended:
+                break
+        active = [item for item in transitions if item["level_code"] != 7]
+        base_pattern_clocks = sum(item["duration_pattern_clocks"] for item in active)
+        clk_div = (reg24 >> 3) & 0x7
+        pattern_clock_hz = 200000000.0 / float(2 ** clk_div)
+        nominal_hz = pattern_clock_hz / float(base_pattern_clocks) if base_pattern_clocks else None
+        return {
+            "profile_number": profile_number,
+            "register_start": "0x%02X" % base,
+            "registers": ["0x%08X" % value for value in registers],
+            "transitions": transitions,
+            "base_pattern_clocks": base_pattern_clocks,
+            "pattern_clock_hz": pattern_clock_hz,
+            "nominal_base_pattern_hz": nominal_hz,
+            "repeat_count_field": (reg25 >> 1) & 0x1f,
+            "tail_count_field": (reg25 >> 6) & 0x1f,
+            "register24": "0x%08X" % reg24,
+            "register25": "0x%08X" % reg25,
+        }
+
+    def program_known_pattern_profile0(self, profile):
+        """Program and bit-for-bit verify one whitelisted five-level profile.
+
+        The caller must have made sure that the transmitter is idle.  This
+        method additionally forces TX_BF_MODE off before touching profile RAM,
+        keeps the existing TX_START_DEL/TR switch controls, selects CLK_DIV=0,
+        disables elastography mode, then pulses LOAD_PROF and reads everything
+        back.  It returns the previous pattern registers for cleanup.
+        """
+        self.set_internal_bf(False)
+        original_pattern_registers = [
+            self.read("PATTERN-PROFILE", 0x60 + offset) for offset in range(8)
+        ]
+        reg24 = self.read("GLOBAL", 0x18)
+        reg25 = self.read("GLOBAL", 0x19)
+
+        # CLK_DIV is bits 5:3.  Preserve TX_START_DEL, TR switch mode, drive
+        # settings and all unrelated controls; TX_BF_MODE stays off here.
+        programmed_reg24 = (reg24 & ~0x39) & 0xffffffff
+        # Replace REPEAT_COUNT/TAIL_COUNT (bits 10:1), force elastography off
+        # (bit 11), and preserve all other power-control fields.  On this EVM's
+        # GUI/ActiveX path a LOAD_PROF operation is observed to restore Reg25's
+        # low fields to the GUI's prior value, so Reg25 is deliberately written
+        # *after* LOAD_PROF and verified again before any transmit is enabled.
+        programmed_reg25 = (
+            (reg25 & ~0x00000ffe) | (profile["register25"] & 0x000007fe)
+        ) & 0xffffffff
+        self.write_verified("GLOBAL", 0x18, programmed_reg24)
+        for offset, value in enumerate(profile["registers"]):
+            self.write_verified("PATTERN-PROFILE", 0x60 + offset, value)
+        self.pulse_load_profile()
+        self.write_verified("GLOBAL", 0x19, programmed_reg25)
+
+        actual_reg24 = self.read("GLOBAL", 0x18)
+        actual_reg25 = self.read("GLOBAL", 0x19)
+        actual_registers = [
+            self.read("PATTERN-PROFILE", 0x60 + offset) for offset in range(8)
+        ]
+        if (actual_reg24 & 0x38) != 0:
+            raise AutomationError(
+                "TX pattern verify failed: CLK_DIV is not zero (Reg24=0x%08X)" %
+                actual_reg24
+            )
+        if (actual_reg25 & 0x000007fe) != (profile["register25"] & 0x000007fe):
+            raise AutomationError(
+                "TX pattern verify failed: Reg25 expected low fields 0x%03X got 0x%03X" % (
+                    profile["register25"] & 0x000007fe,
+                    actual_reg25 & 0x000007fe,
+                )
+            )
+        if actual_registers != profile["registers"]:
+            raise AutomationError(
+                "TX pattern verify failed: profile0 readback does not match programmed words"
+            )
+        return {
+            "original_pattern_registers": original_pattern_registers,
+            "programmed_register24": actual_reg24,
+            "programmed_register25": actual_reg25,
+            "programmed_pattern_registers": actual_registers,
+        }
+
     def set_internal_bf(self, enabled):
         reg24 = self.read("GLOBAL", 0x18)
         new_value = reg24 | 0x1 if enabled else reg24 & 0xfffffffe
@@ -782,6 +1027,7 @@ class HSDCController(object):
         if not os.path.isfile(HSDC_DLL):
             raise AutomationError("HSDC automation DLL not found: " + HSDC_DLL)
         self.timeout_ms = int(timeout_ms)
+        self.connected_by_this_process = False
         self.dll = ctypes.cdll.LoadLibrary(HSDC_DLL)
         self._configure_return_types()
         try:
@@ -855,6 +1101,7 @@ class HSDCController(object):
                 ctypes.c_char_p(self._bytes(board_serial)),
                 timeout,
             )
+            self.connected_by_this_process = True
             # RXTX=0 代表 AFE RX。
             self.call(
                 "Select_AFE_Device",
@@ -892,13 +1139,33 @@ class HSDCController(object):
             # 消費者速度控制已實現後才應顯式開啟。
             self.call("Set_Write_Capture_to_File", ctypes.c_ubyte(1), timeout)
             log("HSDC capture-to-file streaming ENABLED (experimental future mode).")
-        if trigger_mode == "normal" and not full_setup:
+        if trigger_mode == "hardware":
+            # SYNCP from the stock TX7316EVM CPLD is free-running even while
+            # TX_BF_MODE is OFF. Arming here could capture before an angle
+            # profile is selected. Keep HSDC disarmed until capture().
+            self.set_trigger("normal")
+            log("HSDC external trigger left DISARMED during setup.")
+        elif trigger_mode == "normal" and not full_setup:
             # HSDC GUI 已由用戶設為可手動 Capture 的 Normal 模式。復用 GUI 狀態時
             # 不再調 Trigger_Option，避免該 API 重新配置 TSW ports；下一步直接用
             # Pass_Capture_Event，行為等同手工點擊 Capture。
             log("HSDC reusing current GUI Normal Trigger state.")
         else:
             self.set_trigger(trigger_mode)
+
+    def disconnect(self):
+        """Release only the HSDC session opened by this process.
+
+        The GUI remains open.  Releasing the Automation DLL connection avoids
+        leaving a stale client behind, which otherwise makes a later run fail
+        at Connect_Board with TI error 66 (Connection Closed/restart GUI).
+        """
+        if not self.connected_by_this_process:
+            return
+        try:
+            self.call("Disconnect_Board", ctypes.c_int32(self.timeout_ms))
+        finally:
+            self.connected_by_this_process = False
 
     def set_trigger(self, trigger_mode):
         timeout = ctypes.c_int32(self.timeout_ms)
@@ -924,7 +1191,16 @@ class HSDCController(object):
             self.call("Generate_Software_Trigger", ctypes.c_int32(1), timeout)
         elif trigger_mode == "hardware":
             # 這個調用會等待 TSW J13 的外部觸發；未接線會超時。
-            self.call("Read_DDR_Memory", ctypes.c_int32(1), timeout)
+            # Arm only after the caller has selected the angle profile,
+            # enabled TX_BF_MODE and allowed the transmitter to settle. The
+            # next SYNCP rising edge starts one contiguous N-sample DDR block.
+            self.set_trigger("hardware")
+            try:
+                self.call("Read_DDR_Memory", ctypes.c_int32(1), timeout)
+            finally:
+                # Free-running SYNCP must not start a record during profile
+                # changes or the slow BIN save operation.
+                self.set_trigger("normal")
         else:
             raise AutomationError("Unknown trigger mode: " + trigger_mode)
 
@@ -971,6 +1247,11 @@ def make_parser():
         help="active physical elements connected consecutively to A1..AN (2..8)",
     )
     parser.add_argument(
+        "--rx-channels", type=parse_rx_channels,
+        default=list(range(9, 17)),
+        help="1-based HSDC slots connected in order to physical A1..AN",
+    )
+    parser.add_argument(
         "--pitch-mm", type=float, default=ELEMENT_PITCH_M * 1e3,
         help="physical center-to-center element pitch in millimetres",
     )
@@ -992,6 +1273,14 @@ def make_parser():
     )
     parser.add_argument("--samples", type=int, default=SAMPLES_PER_CHANNEL)
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument(
+        "--expected-prf-hz", type=float, default=0.0,
+        help="metadata/QA value for the pulse repetition frequency",
+    )
+    parser.add_argument(
+        "--expected-prfs-per-bin", type=int, default=0,
+        help="metadata/QA count of complete PRF emissions expected in each BIN",
+    )
     parser.add_argument("--settle-seconds", type=float, default=0.25)
     parser.add_argument("--timeout-ms", type=int, default=HSDC_DEFAULT_TIMEOUT_MS)
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
@@ -1018,12 +1307,28 @@ def make_parser():
         "--keep-tx-state", action="store_true",
         help="leave final profile and TX_BF_MODE active; not recommended",
     )
+    parser.add_argument(
+        "--allow-pattern-mismatch", action="store_true",
+        help="diagnostic override: capture even when the known-frequency pattern readback differs",
+    )
+    parser.add_argument(
+        "--program-known-pattern", action="store_true",
+        help="with TX idle, write and verify the whitelisted 1/2.5/4 MHz profile0 before capture",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--skip-file-qa", action="store_true",
         help="skip post-save uint16 min/max and rail-code scan",
     )
     return parser
+
+
+def known_pattern_key_for_frequency(frequency_mhz):
+    """Return the exact whitelisted pattern key for a requested MHz value."""
+    for candidate in sorted(KNOWN_PATTERN_PROFILES):
+        if abs(float(frequency_mhz) - candidate) < 1e-9:
+            return candidate
+    return None
 
 
 def validate_arguments(args):
@@ -1039,12 +1344,22 @@ def validate_arguments(args):
         )
     if not (2 <= args.tx_elements <= 8):
         raise AutomationError("--tx-elements must be in the range 2..8 for TX7316 G1/A1-A8")
+    if len(args.rx_channels) != args.tx_elements:
+        raise AutomationError("--rx-channels count must equal --tx-elements")
+    if len(set(args.rx_channels)) != len(args.rx_channels) or any(
+            slot < 1 or slot > RX_CHANNELS_IN_FILE for slot in args.rx_channels):
+        raise AutomationError("--rx-channels must be unique 1-based HSDC slots in 1..16")
     if args.pitch_mm <= 0:
         raise AutomationError("--pitch-mm must be positive")
     if args.element_width_mm <= 0 or args.element_width_mm > args.pitch_mm:
         raise AutomationError("--element-width-mm must be positive and no larger than pitch")
     if args.center_frequency_mhz <= 0:
         raise AutomationError("--center-frequency-mhz must be positive")
+    known_pattern_key = known_pattern_key_for_frequency(args.center_frequency_mhz)
+    if args.program_known_pattern and known_pattern_key is None:
+        raise AutomationError(
+            "--program-known-pattern only supports exactly 1, 1.5, 2, 2.5 or 4 MHz"
+        )
     if not (1000.0 <= args.sound_speed_m_s <= 2000.0):
         raise AutomationError("--sound-speed-m-s must be between 1000 and 2000")
     if args.delay_quantum_ns <= 0:
@@ -1053,6 +1368,10 @@ def validate_arguments(args):
         raise AutomationError("--samples must be a positive multiple of 4096")
     if args.repeats <= 0:
         raise AutomationError("--repeats must be positive")
+    if args.expected_prf_hz < 0:
+        raise AutomationError("--expected-prf-hz cannot be negative")
+    if args.expected_prfs_per_bin < 0:
+        raise AutomationError("--expected-prfs-per-bin cannot be negative")
     if args.settle_seconds < 0:
         raise AutomationError("--settle-seconds cannot be negative")
     if max(abs(x) for x in args.angles) > RECOMMENDED_MAX_STEER_DEG and not args.allow_large_steering:
@@ -1090,9 +1409,14 @@ def main(argv=None):
     if not args.capture:
         args.dry_run = True
     validate_arguments(args)
+    # This value is needed later, after the run directory and manifest have
+    # been created.  Keep it in main's scope; validate_arguments intentionally
+    # performs validation only and does not export local state.
+    known_pattern_key = known_pattern_key_for_frequency(args.center_frequency_mhz)
     apply_runtime_array_configuration(args)
 
     report = array_report(args.angles, args.reverse_angle_sign)
+    report["rx_hsdc_slots_1_based"] = list(args.rx_channels)
     if args.dry_run:
         log("DRY RUN COMPLETE: no GUI connection, no TX write, no capture.")
         return 0
@@ -1133,6 +1457,8 @@ def main(argv=None):
         "script": os.path.abspath(__file__),
         "python": sys.executable,
         "arguments": vars(args),
+        "expected_prf_hz": args.expected_prf_hz or None,
+        "expected_prfs_per_bin": args.expected_prfs_per_bin or None,
         "array": report,
         "hsdc": {
             "board_serial": hsdc_board_serial,
@@ -1158,6 +1484,9 @@ def main(argv=None):
     hsdc = None
     original_reg22 = None
     original_reg24 = None
+    original_reg25 = None
+    original_pattern_registers = None
+    active_pattern_reg25 = None
     error = None
     try:
         log("Connecting to TX7316 GUI using %s..." % TX_GUI_PORT_LABEL)
@@ -1173,6 +1502,70 @@ def main(argv=None):
             "selected_g1_profile": (original_reg22 >> 28) & 0xf,
             "internal_bf_enabled": bool(original_reg24 & 0x1),
         }
+        known_profile = (
+            KNOWN_PATTERN_PROFILES.get(known_pattern_key)
+            if known_pattern_key is not None else None
+        )
+        if args.program_known_pattern:
+            log("TX pattern programming requested for %s" % known_profile["name"])
+            # Take the cleanup snapshot before the first profile-memory write.
+            # If programming or verification fails halfway through, finally
+            # can still restore the original eight words and Reg25.
+            original_pattern_registers = [
+                tx.read("PATTERN-PROFILE", 0x60 + offset) for offset in range(8)
+            ]
+            programmed = tx.program_known_pattern_profile0(known_profile)
+            active_pattern_reg25 = programmed["programmed_register25"]
+            manifest["tx_pattern_programming"] = {
+                "requested": True,
+                "reference_name": known_profile["name"],
+                "register24_after": "0x%08X" % programmed["programmed_register24"],
+                "register25_after": "0x%08X" % programmed["programmed_register25"],
+                "profile0_after": [
+                    "0x%08X" % value
+                    for value in programmed["programmed_pattern_registers"]
+                ],
+            }
+
+        active_reg24 = tx.read("GLOBAL", 0x18)
+        active_reg25 = tx.read("GLOBAL", 0x19)
+        waveform_readback = tx.snapshot_pattern_profile(0, active_reg24, active_reg25)
+        manifest["tx_waveform_readback"] = waveform_readback
+        if known_profile is not None:
+            expected_registers = [
+                "0x%08X" % value for value in known_profile["registers"]
+            ]
+            actual_registers = waveform_readback["registers"][:8]
+            pattern_matches = (
+                (active_reg24 & 0x38) == 0 and
+                (active_reg25 & 0x000007fe) ==
+                (known_profile["register25"] & 0x000007fe) and
+                actual_registers == expected_registers
+            )
+            waveform_readback["reference_name"] = known_profile["name"]
+            waveform_readback["reference_register25"] = (
+                "0x%08X" % known_profile["register25"]
+            )
+            waveform_readback["reference_registers_0x60_to_0x67"] = expected_registers
+            waveform_readback["reference_matches"] = bool(pattern_matches)
+            waveform_readback["requested_frequency_mhz"] = args.center_frequency_mhz
+            waveform_readback["expected_nominal_base_pattern_hz"] = known_profile[
+                "nominal_base_pattern_hz"
+            ]
+            json_write_atomic(manifest_path, manifest)
+            log(
+                "TX waveform readback: reference=%s Reg25=0x%08X nominal=%.6f MHz match=%s" % (
+                    known_profile["name"],
+                    active_reg25,
+                    (waveform_readback["nominal_base_pattern_hz"] or 0.0) / 1e6,
+                    str(bool(pattern_matches)),
+                )
+            )
+            if not pattern_matches and not args.allow_pattern_mismatch:
+                raise AutomationError(
+                    "TX %.3f MHz pattern readback does not match the whitelisted reference; "
+                    "capture refused." % args.center_frequency_mhz
+                )
         json_write_atomic(manifest_path, manifest)
         log("TX original Reg22=0x%08X Reg24=0x%08X Reg25=0x%08X" % (
             original_reg22, original_reg24, original_reg25))
@@ -1262,6 +1655,14 @@ def main(argv=None):
                     # 嚴格複製人工 GUI 操作順序：改延時/LOAD_PROF 時保持 BF 關閉。
                     tx.set_internal_bf(False)
                     tx.select_g1_profile(hardware_profile_number)
+                    if args.program_known_pattern:
+                        # LOAD_PROF above can restore Reg25's low fields in the
+                        # EVM GUI path.  Reassert and verify Repeat/Tail while
+                        # TX_BF_MODE is still OFF, immediately before transmit.
+                        tx.write_verified(
+                            "GLOBAL", 0x19,
+                            int(active_pattern_reg25) & 0xffffffff,
+                        )
                     log("Selected batch %02d/P%02d for sequence %02d; LOAD_PROF self-cleared; "
                         "TX GUI/hardware is idle." % (
                             batch_number + 1, hardware_profile_number, profile_number))
@@ -1278,6 +1679,11 @@ def main(argv=None):
                         raise AutomationError("Refusing to overwrite: " + path)
 
                     started = utc_now_text()
+                    if args.trigger == "hardware":
+                        log(
+                            "Arming TSW14J50 now; next SYNCP rising edge starts a contiguous "
+                            "%d-sample/channel DDR record." % args.samples
+                        )
                     # Pass_Capture_Event 等價於在 HSDC Pro 中點擊 Capture。
                     hsdc.capture(args.trigger)
                     # DDR 捕獲完成後立刻停止內部發射；保存文件時無需繼續發射。
@@ -1286,8 +1692,10 @@ def main(argv=None):
                     # ADC_Save_Raw_Data_As_Binary_File 等價於保存 raw binary；path 已包含
                     # 角度、Profile 和 repeat 編號，因此不需要事後手工重命名。
                     log(
-                        "Saving 33.5 MB HSDC raw BIN; this TI API may take 30-60 seconds. "
-                        "Do not close the window or click the GUIs..."
+                        "Saving %.1f MiB HSDC raw BIN; this TI API may take 30-60 seconds. "
+                        "Do not close the window or click the GUIs..." % (
+                            expected_file_bytes / float(1024 ** 2)
+                        )
                     )
                     hsdc.save_binary(path, expected_file_bytes)
                     finished = utc_now_text()
@@ -1324,6 +1732,8 @@ def main(argv=None):
                         ],
                         "delay_counts_A1_to_A8": profile["delay_counts_A1_to_A8"],
                         "repeat_index": repeat_index,
+                        "expected_prf_hz": args.expected_prf_hz or None,
+                        "expected_prfs_in_bin": args.expected_prfs_per_bin or None,
                         "capture_started_utc": started,
                         "capture_finished_utc": finished,
                         "file_bytes": actual_bytes,
@@ -1333,6 +1743,19 @@ def main(argv=None):
                     json_write_atomic(manifest_path, manifest)
                     log("Saved %-40s %d bytes" % (filename, actual_bytes))
 
+        manifest["tx_cfg_files"] = save_verified_tx_cfg_files(
+            run_dir,
+            report,
+            profile_batches,
+            original_reg22,
+            active_reg24,
+            active_reg25,
+            waveform_readback,
+            args.center_frequency_mhz,
+        )
+        log("Saved %d verified TX7316 CFG batch file(s)." % len(
+            manifest["tx_cfg_files"]
+        ))
         manifest["status"] = "complete"
         manifest["completed_utc"] = utc_now_text()
         json_write_atomic(manifest_path, manifest)
@@ -1351,13 +1774,34 @@ def main(argv=None):
         raise
 
     finally:
+        if hsdc is not None:
+            try:
+                hsdc.disconnect()
+            except Exception as disconnect_exc:
+                # Capture data and the TX fail-safe cleanup are more important
+                # than a best-effort DLL disconnect.  Report it explicitly so
+                # the next run can restart HSDC Pro if code 66 occurs.
+                log("WARNING: failed to disconnect HSDC Automation session: %r" % disconnect_exc)
         if tx is not None and not args.keep_tx_state:
             try:
                 restored = []
+                # Restore pattern memory before restoring the original global
+                # timing fields.  TX_BF_MODE remains forced off throughout.
+                if original_pattern_registers is not None:
+                    tx.set_internal_bf(False)
+                    for offset, value in enumerate(original_pattern_registers):
+                        tx.write_verified("PATTERN-PROFILE", 0x60 + offset, value)
+                    tx.pulse_load_profile()
+                    restored.append("pattern profile0")
                 if original_reg22 is not None:
                     tx.write_verified("GLOBAL", 0x16, original_reg22)
                     tx.pulse_load_profile()
                     restored.append("Reg22/profile selection")
+                # Restore Reg25 only after every LOAD_PROF operation; the EVM
+                # GUI path can otherwise overwrite its low Repeat/Tail fields.
+                if original_reg25 is not None:
+                    tx.write_verified("GLOBAL", 0x19, original_reg25)
+                    restored.append("Reg25")
                 if original_reg24 is not None:
                     # Never re-enable high-voltage pulsing during automatic cleanup,
                     # even if TX_BF_MODE happened to be ON before the run.  Restore

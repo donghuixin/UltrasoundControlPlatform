@@ -1,5 +1,17 @@
 # 故障排查與驗收
 
+## HSDC `Connect_Board failed, code=66`
+
+TI本機錯誤表將66定義為`Connection Closed. Please restart HSDC Pro GUI.`。常見原因是上一個Automation客戶端未正常結束、同時開了兩個採集腳本，或HSDC GUI曾重啟而DLL仍持有舊session。
+
+1. 關閉所有採集命令窗，確認UI沒有任務仍在監控；
+2. 關閉HSDC Pro，只保留一個實例並以管理員身份重啟；
+3. 重連TSW，重選`AFE58JD48_120M_8L_M16_FIXED`並Reload INI；
+4. AFE重新執行`DUT RESET → INITIALIZE LMK → AFE RESET → INITIALIZE AFE`；
+5. 手動小樣本Capture成功後，再只點一次HKUST採集。
+
+頂部`HSDC: open`只證明進程存在，不能取代`Connect_Board OK`。
+
 ## TX7316 `Error 4 / FT_IO_ERROR`
 
 原因通常是USB/FTDI handle失效、被另一TI GUI占用或斷電後GUI仍顯示假CONNECTED。停止高壓，關閉腳本和GUI，拔TX USB與J3等10秒，只接TX重啟；不要點Continue繼續未知狀態。

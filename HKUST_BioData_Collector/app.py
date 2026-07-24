@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
@@ -30,6 +31,12 @@ from delay_model import (
     format_angles_cli,
 )
 from doppler_model import DopplerConfig, DopplerResult, calculate_doppler, result_as_dict
+from rapid_scan_model import (
+    RapidScanConfig,
+    build_rapid_scan_plan,
+    contiguous_prf_block_samples,
+    plan_as_dict,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -39,10 +46,25 @@ RECONSTRUCTION_SCRIPT = CAPTURE_ROOT / "reconstruct_ultrasound.py"
 DEFAULT_AUTO_RUNS = CAPTURE_ROOT / "auto_runs"
 PYTHON27 = Path(r"C:\Python27\python.exe")
 CONFIG_PATH = APP_DIR / "collector_config.json"
-EXAMPLE_CONFIG_PATH = APP_DIR / "collector_config.example.json"
 DOPPLER_GUIDE = APP_DIR / "PW_DOPPLER_OPERATION_GUIDE.md"
 RX_CHANNELS_IN_CAPTURE_FILE = 16
 BYTES_PER_ADC_SAMPLE = 2
+ADC_SAMPLE_RATE_HZ = 120_000_000.0
+
+AUTO_SCAN_CPLD_BLOCK_MODE = "板載CPLD：每角32個連續PRF（推薦）"
+
+AUTO_SCAN_VERIFIED_MODE = "已驗證：每角度獨立BIN"
+AUTO_SCAN_RAPID_MODE = "逐PRF：每SYNC換角度（需快速掃描固件）"
+
+DUPLICATE_POLICY_OPTIONS = {
+    "自動去重：保留映射中先出現者": "drop-later",
+    "保留全部配置槽（僅作診斷）": "keep-all",
+    "手動指定DAS接收槽": "manual",
+}
+ANGLE_SUBSET_OPTIONS = {
+    "使用全部已採集角度": None,
+    "按2°子集重建（1°資料隔一個取一個）": 2.0,
+}
 
 
 COLORS = {
@@ -152,14 +174,13 @@ class CollectorApp(tk.Tk):
         self.option_add("*Font", ("Segoe UI", 10))
         self.option_add("*TCombobox*Listbox.font", ("Segoe UI", 10))
 
-        # collector_config.json is local runtime state and is intentionally
-        # ignored by Git.  A fresh clone starts from the documented example.
-        self.settings = read_json(CONFIG_PATH) or read_json(EXAMPLE_CONFIG_PATH)
+        self.settings = read_json(CONFIG_PATH)
         self.background_photo: ImageTk.PhotoImage | None = None
         self.background_job: str | None = None
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.preview_path: Path | None = None
         self.preview_filename = "plane_wave_das_bmode.png"
+        self.current_prf_cycle_index = -1
         self.processing_active = False
         self.capture_watch: dict | None = None
         self.pages: dict[str, tk.Frame] = {}
@@ -170,18 +191,21 @@ class CollectorApp(tk.Tk):
         self._build_shell()
         self._build_array_page()
         self._build_capture_page()
+        self._build_auto_scan_page()
         self._build_doppler_page()
         self._build_processing_page()
         self.show_page(start_page if start_page in self.pages else "array")
         self.recalculate_delays(show_errors=False)
+        self.recalculate_auto_scan(show_errors=False)
         self.recalculate_doppler(show_errors=False)
         self.refresh_capture_runs()
         self._poll_external_state()
 
         self.bind("<Alt-Key-1>", lambda _event: self.show_page("array"))
         self.bind("<Alt-Key-2>", lambda _event: self.show_page("capture"))
-        self.bind("<Alt-Key-3>", lambda _event: self.show_page("doppler"))
-        self.bind("<Alt-Key-4>", lambda _event: self.show_page("processing"))
+        self.bind("<Alt-Key-3>", lambda _event: self.show_page("auto_scan"))
+        self.bind("<Alt-Key-4>", lambda _event: self.show_page("doppler"))
+        self.bind("<Alt-Key-5>", lambda _event: self.show_page("processing"))
         self.bind("<Configure>", self._schedule_background)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -272,7 +296,10 @@ class CollectorApp(tk.Tk):
         self.elements_var = tk.IntVar(value=int(get("elements", 8)))
         self.pitch_var = tk.StringVar(value=str(get("pitch_mm", 1.59)))
         self.width_var = tk.StringVar(value=str(get("element_width_mm", 1.0)))
-        self.frequency_var = tk.StringVar(value=str(get("center_frequency_mhz", 1.0)))
+        self.rx_channels_var = tk.StringVar(
+            value=str(get("rx_hsdc_slots", "9,10,11,12,13,14,15,16"))
+        )
+        self.frequency_var = tk.StringVar(value=str(get("center_frequency_mhz", 2.5)))
         self.sound_speed_var = tk.StringVar(value=str(get("sound_speed_m_s", 1540.0)))
         self.quantum_var = tk.StringVar(value=str(get("delay_quantum_ns", 5.0)))
         self.min_angle_var = tk.StringVar(value=str(get("min_angle", -10.0)))
@@ -280,14 +307,11 @@ class CollectorApp(tk.Tk):
         self.angle_step_var = tk.StringVar(value=str(get("angle_step", 1.0)))
         self.reverse_var = tk.BooleanVar(value=bool(get("reverse_angle_sign", False)))
 
-        self.samples_var = tk.StringVar(value=str(get("samples", 262144)))
+        self.samples_var = tk.StringVar(value=str(get("samples", 1048576)))
         self.repeats_var = tk.StringVar(value=str(get("repeats", 1)))
         self.settle_var = tk.StringVar(value=str(get("settle_seconds", 0.25)))
         self.trigger_var = tk.StringVar(value=str(get("trigger", "normal")))
-        configured_output_root = Path(str(get("output_root", DEFAULT_AUTO_RUNS))).expanduser()
-        if not configured_output_root.is_absolute():
-            configured_output_root = (CAPTURE_ROOT / configured_output_root).resolve()
-        self.output_root_var = tk.StringVar(value=str(configured_output_root))
+        self.output_root_var = tk.StringVar(value=str(get("output_root", DEFAULT_AUTO_RUNS)))
         self.capture_folder_var = tk.StringVar(value="")
         self.capture_status_var = tk.StringVar(value="尚未啟動採集")
         self.command_preview_var = tk.StringVar(value="修改參數後，採集命令會顯示在這裡。")
@@ -295,12 +319,44 @@ class CollectorApp(tk.Tk):
         self.array_warning_var = tk.StringVar(value="")
         self.sweep_estimate_var = tk.StringVar(value="")
         self.processing_status_var = tk.StringVar(value="選擇一個完整的 capture_* 文件夾。")
+        self.duplicate_policy_var = tk.StringVar(
+            value=str(
+                get(
+                    "duplicate_policy_label",
+                    "自動去重：保留映射中先出現者",
+                )
+            )
+        )
+        self.manual_das_rx_var = tk.StringVar(
+            value=str(get("manual_das_rx_slots", "9,10,11,12,13,14"))
+        )
+        self.reconstruction_angle_subset_var = tk.StringVar(
+            value=str(get("reconstruction_angle_subset_label", "使用全部已採集角度"))
+        )
+        self.processing_option_help_var = tk.StringVar(value="")
         self.result_summary_var = tk.StringVar(value="尚未載入分析結果。")
         self.preview_source_var = tk.StringVar(value="尚未選擇結果來源")
         self.header_admin_var = tk.StringVar(value="Admin: checking")
         self.header_tx_var = tk.StringVar(value="TX GUI: checking")
         self.header_hsdc_var = tk.StringVar(value="HSDC: checking")
         self.prerequisite_vars = [tk.BooleanVar(value=False) for _ in range(5)]
+
+        saved_auto_scan_mode = str(get("auto_scan_mode", AUTO_SCAN_CPLD_BLOCK_MODE))
+        if saved_auto_scan_mode == AUTO_SCAN_RAPID_MODE:
+            saved_auto_scan_mode = AUTO_SCAN_CPLD_BLOCK_MODE
+        self.auto_scan_mode_var = tk.StringVar(value=saved_auto_scan_mode)
+        self.auto_scan_prf_var = tk.StringVar(value=str(get("auto_scan_prf_hz", 1000.0)))
+        self.auto_scan_frames_var = tk.StringVar(value=str(get("auto_scan_frames", 32)))
+        self.auto_scan_guard_var = tk.StringVar(value=str(get("auto_scan_guard_prfs", 1)))
+        self.auto_scan_summary_var = tk.StringVar(value="等待掃描時序計算")
+        self.auto_scan_status_var = tk.StringVar(value="尚未生成逐PRF掃描方案")
+        self.auto_scan_gate_var = tk.StringVar(value="FIRMWARE REQUIRED")
+        self.auto_scan_confirm_vars = [tk.BooleanVar(value=False) for _ in range(3)]
+        if self.auto_scan_mode_var.get() == AUTO_SCAN_CPLD_BLOCK_MODE:
+            self.min_angle_var.set("-10")
+            self.max_angle_var.set("10")
+            self.angle_step_var.set("2")
+            self.auto_scan_frames_var.set("32")
 
         self.doppler_prf_source_var = tk.StringVar(
             value=str(get("doppler_prf_source", "Onboard CPLD - fixed 1 kHz"))
@@ -354,8 +410,9 @@ class CollectorApp(tk.Tk):
         nav_items = [
             ("array", "陣列與延時  Array"),
             ("capture", "自動採集  Capture"),
+            ("auto_scan", "逐PRF掃描  Auto Scan"),
             ("doppler", "PW多普勒  Doppler"),
-            ("processing", "處理與3D  Process"),
+            ("processing", "處理與成像  Process"),
         ]
         for key, label in nav_items:
             button = ttk.Button(sidebar, text=label, style="Nav.TButton", command=lambda name=key: self.show_page(name))
@@ -427,6 +484,14 @@ class CollectorApp(tk.Tk):
         self._labeled_entry(row2, "中心頻率 (MHz)", self.frequency_var)
         self._labeled_entry(row2, "聲速 (m/s)", self.sound_speed_var)
         self._labeled_entry(row2, "延時量化 (ns)", self.quantum_var)
+        row3 = tk.Frame(geometry, bg=COLORS["surface"])
+        row3.pack(fill="x", padx=18, pady=(0, 16))
+        self._labeled_entry(
+            row3,
+            "A1…AN 對應的 HSDC 接收槽（依序；逗號分隔）",
+            self.rx_channels_var,
+            width=34,
+        )
 
         sweep = self._card(top_row)
         sweep._shadow_wrapper.grid(row=0, column=1, sticky="nsew", padx=(10, 0))  # type: ignore[attr-defined]
@@ -562,6 +627,164 @@ class CollectorApp(tk.Tk):
         ttk.Button(button_row, text="Dry run（不接觸硬件）", style="Secondary.TButton", command=lambda: self.launch_capture(True)).pack(side="left", padx=(0, 8))
         self.capture_button = ttk.Button(button_row, text="開始自動採集", style="Danger.TButton", command=lambda: self.launch_capture(False))
         self.capture_button.pack(side="left")
+
+    def _build_auto_scan_page(self) -> None:
+        page = self._new_page("auto_scan")
+        self._page_heading(
+            page,
+            "逐PRF自動掃描",
+            "每個PRF/SYNC週期切換一個beam；先生成可審核的角度—Profile—sample時序，再由已驗證的快速掃描固件執行。",
+        )
+
+        scroll_host = tk.Frame(page, bg=COLORS["background"])
+        scroll_host.pack(fill="both", expand=True)
+        canvas = tk.Canvas(scroll_host, bg=COLORS["background"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        body = tk.Frame(canvas, bg=COLORS["background"])
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_window, width=event.width))
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+
+        settings_card = self._card(body)
+        settings_card._shadow_wrapper.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 12))  # type: ignore[attr-defined]
+        ttk.Label(settings_card, text="Scan timing", style="CardTitle.TLabel").pack(anchor="w", padx=18, pady=(16, 12))
+        mode_holder = tk.Frame(settings_card, bg=COLORS["surface"])
+        mode_holder.pack(fill="x", padx=18, pady=(0, 12))
+        tk.Label(mode_holder, text="Execution mode", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        mode_combo = ttk.Combobox(
+            mode_holder,
+            textvariable=self.auto_scan_mode_var,
+            values=[AUTO_SCAN_CPLD_BLOCK_MODE, AUTO_SCAN_VERIFIED_MODE, AUTO_SCAN_RAPID_MODE],
+            state="readonly",
+        )
+        mode_combo.pack(fill="x")
+        mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._auto_scan_mode_changed())
+
+        timing_row = tk.Frame(settings_card, bg=COLORS["surface"])
+        timing_row.pack(fill="x", padx=18, pady=(0, 12))
+        prf_entry = self._labeled_entry(timing_row, "PRF / SYNC (Hz)", self.auto_scan_prf_var)
+        frames_entry = self._labeled_entry(timing_row, "PRFs averaged / angle", self.auto_scan_frames_var)
+        guard_entry = self._labeled_entry(timing_row, "Guard PRFs / BIN", self.auto_scan_guard_var)
+        for entry in (prf_entry, frames_entry, guard_entry):
+            entry.bind("<FocusOut>", lambda _event: self.recalculate_auto_scan(show_errors=False))
+            entry.bind("<Return>", lambda _event: self.recalculate_auto_scan(show_errors=True))
+        tk.Label(
+            settings_card,
+            textvariable=self.auto_scan_summary_var,
+            bg=COLORS["primary_soft"],
+            fg=COLORS["primary_hover"],
+            justify="left",
+            anchor="w",
+            padx=12,
+            pady=10,
+            wraplength=780,
+            font=("Cascadia Mono", 9),
+        ).pack(fill="x", padx=18, pady=(0, 16))
+
+        gate_card = self._card(body)
+        gate_card._shadow_wrapper.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=(0, 12))  # type: ignore[attr-defined]
+        gate_top = tk.Frame(gate_card, bg=COLORS["surface"])
+        gate_top.pack(fill="x", padx=18, pady=(16, 8))
+        ttk.Label(gate_top, text="Hardware gate", style="CardTitle.TLabel").pack(side="left")
+        self.auto_scan_gate_label = tk.Label(
+            gate_top,
+            textvariable=self.auto_scan_gate_var,
+            bg=COLORS["warning_soft"],
+            fg=COLORS["warning"],
+            padx=10,
+            pady=5,
+            font=("Segoe UI Semibold", 8),
+        )
+        self.auto_scan_gate_label.pack(side="right")
+        requirements = [
+            "SYNCP經有源緩衝後接TSW J13；AFE J25只作可選事件參考",
+            "TSW使用外部上升沿；AFE固定增益；1 kHz不得接LMK時鐘輸入",
+            "每角一個BIN；32個同角PRF完整保存後才由軟件換下一角",
+        ]
+        for variable, text in zip(self.auto_scan_confirm_vars, requirements):
+            ttk.Checkbutton(
+                gate_card,
+                text=text,
+                variable=variable,
+                command=lambda: self.recalculate_auto_scan(show_errors=False),
+            ).pack(anchor="w", padx=18, pady=2)
+        tk.Label(
+            gate_card,
+            text="原廠TX7316EVM CPLD會持續輸出1 kHz SYNCP，但不會逐SYNC輪換Profile。推薦模式在BIN之間切角，BIN內保存32個同角PRF。",
+            bg=COLORS["warning_soft"],
+            fg=COLORS["warning"],
+            justify="left",
+            wraplength=430,
+            padx=10,
+            pady=8,
+            font=("Segoe UI Semibold", 9),
+        ).pack(fill="x", padx=18, pady=(10, 16))
+
+        timeline_card = self._card(body)
+        timeline_card._shadow_wrapper.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 12))  # type: ignore[attr-defined]
+        timeline_top = tk.Frame(timeline_card, bg=COLORS["surface"])
+        timeline_top.pack(fill="x", padx=18, pady=(15, 9))
+        ttk.Label(timeline_top, text="Deterministic event map", style="CardTitle.TLabel").pack(side="left")
+        tk.Label(
+            timeline_top,
+            text="SYNC n → bank / frame / TX profile / angle / HSDC sample",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Cascadia Mono", 9),
+        ).pack(side="right")
+        columns = ("bank", "frame", "event", "profile", "angle", "time", "sample")
+        self.auto_scan_tree = ttk.Treeview(timeline_card, columns=columns, show="headings", height=9)
+        headings = ("Bank", "Sweep", "SYNC event", "TX profile", "Beam angle", "Time", "Sample offset")
+        widths = (65, 70, 90, 90, 95, 100, 130)
+        for column, heading, width in zip(columns, headings, widths):
+            self.auto_scan_tree.heading(column, text=heading)
+            self.auto_scan_tree.column(column, width=width, minwidth=55, anchor="center", stretch=column == "sample")
+        timeline_scroll = ttk.Scrollbar(timeline_card, orient="vertical", command=self.auto_scan_tree.yview)
+        self.auto_scan_tree.configure(yscrollcommand=timeline_scroll.set)
+        self.auto_scan_tree.pack(side="left", fill="both", expand=True, padx=(18, 0), pady=(0, 16))
+        timeline_scroll.pack(side="right", fill="y", padx=(0, 18), pady=(0, 16))
+
+        action_card = self._card(body)
+        action_card._shadow_wrapper.grid(row=2, column=0, columnspan=2, sticky="ew")  # type: ignore[attr-defined]
+        action_top = tk.Frame(action_card, bg=COLORS["surface"])
+        action_top.pack(fill="x", padx=18, pady=(15, 8))
+        ttk.Label(action_top, text="Plan & execute", style="CardTitle.TLabel").pack(side="left")
+        self.auto_scan_progress = ttk.Progressbar(action_top, mode="indeterminate", length=180)
+        self.auto_scan_progress.pack(side="right")
+        tk.Label(
+            action_card,
+            textvariable=self.auto_scan_status_var,
+            bg=COLORS["surface"],
+            fg=COLORS["text"],
+            anchor="w",
+            font=("Segoe UI Semibold", 10),
+        ).pack(fill="x", padx=18, pady=(0, 10))
+        buttons = tk.Frame(action_card, bg=COLORS["surface"])
+        buttons.pack(fill="x", padx=18, pady=(0, 16))
+        ttk.Button(
+            buttons,
+            text="保存逐PRF掃描方案 JSON",
+            style="Secondary.TButton",
+            command=self.export_auto_scan_plan,
+        ).pack(side="left")
+        ttk.Button(
+            buttons,
+            text="Dry run / 時序檢查",
+            style="Secondary.TButton",
+            command=lambda: self.launch_auto_scan(True),
+        ).pack(side="right", padx=(8, 0))
+        self.auto_scan_start_button = ttk.Button(
+            buttons,
+            text="開始已驗證掃描",
+            style="Danger.TButton",
+            command=lambda: self.launch_auto_scan(False),
+        )
+        self.auto_scan_start_button.pack(side="right")
 
     def _build_doppler_page(self) -> None:
         page = self._new_page("doppler")
@@ -733,7 +956,7 @@ class CollectorApp(tk.Tk):
 
     def _build_processing_page(self) -> None:
         page = self._new_page("processing")
-        self._page_heading(page, "離線重建與3D結果", "處理完整 capture_* 數據；3D曲面只作輔助，2D DAS與深度曲線仍是主要判讀依據。")
+        self._page_heading(page, "離線重建與事件驗證", "每次強制從所選 capture_* 原始BIN重建；同時輸出逐PRF影像、時域事件驗證與通道QA。")
 
         control_card = self._card(page)
         control_card._shadow_wrapper.pack(fill="x", pady=(0, 12))  # type: ignore[attr-defined]
@@ -747,8 +970,81 @@ class CollectorApp(tk.Tk):
         self.capture_combo.bind("<<ComboboxSelected>>", lambda _event: self.load_existing_results())
         ttk.Button(controls, text="選擇文件夾", style="Secondary.TButton", command=self._browse_capture_folder).pack(side="left", padx=(10, 8), pady=(20, 0))
         ttk.Button(controls, text="刷新列表", style="Secondary.TButton", command=self.refresh_capture_runs).pack(side="left", padx=(0, 8), pady=(20, 0))
-        self.process_button = ttk.Button(controls, text="運算並繪製2D / 3D", style="Primary.TButton", command=self.start_processing)
+        ttk.Button(controls, text="清除分析緩存", style="Secondary.TButton", command=self._clear_analysis_cache).pack(side="left", padx=(0, 8), pady=(20, 0))
+        self.process_button = ttk.Button(controls, text="強制重新運算", style="Primary.TButton", command=self.start_processing)
         self.process_button.pack(side="left", pady=(20, 0))
+
+        processing_options = tk.Frame(control_card, bg=COLORS["surface"])
+        processing_options.pack(fill="x", padx=18, pady=(0, 10))
+
+        duplicate_holder = tk.Frame(processing_options, bg=COLORS["surface"])
+        duplicate_holder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        tk.Label(
+            duplicate_holder,
+            text="重複數字槽處理",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", pady=(0, 5))
+        self.duplicate_policy_combo = ttk.Combobox(
+            duplicate_holder,
+            textvariable=self.duplicate_policy_var,
+            values=list(DUPLICATE_POLICY_OPTIONS),
+            state="readonly",
+            width=34,
+        )
+        self.duplicate_policy_combo.pack(fill="x")
+        self.duplicate_policy_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._processing_options_changed()
+        )
+
+        manual_holder = tk.Frame(processing_options, bg=COLORS["surface"])
+        manual_holder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        tk.Label(
+            manual_holder,
+            text="手動DAS槽（逗號分隔）",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", pady=(0, 5))
+        self.manual_das_rx_entry = ttk.Entry(
+            manual_holder, textvariable=self.manual_das_rx_var, width=28
+        )
+        self.manual_das_rx_entry.pack(fill="x")
+
+        angle_holder = tk.Frame(processing_options, bg=COLORS["surface"])
+        angle_holder.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            angle_holder,
+            text="離線角度取樣",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", pady=(0, 5))
+        self.reconstruction_angle_combo = ttk.Combobox(
+            angle_holder,
+            textvariable=self.reconstruction_angle_subset_var,
+            values=list(ANGLE_SUBSET_OPTIONS),
+            state="readonly",
+            width=38,
+        )
+        self.reconstruction_angle_combo.pack(fill="x")
+        self.reconstruction_angle_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._processing_options_changed()
+        )
+
+        tk.Label(
+            control_card,
+            textvariable=self.processing_option_help_var,
+            bg=COLORS["surface_soft"],
+            fg=COLORS["muted"],
+            anchor="w",
+            justify="left",
+            padx=10,
+            pady=7,
+            font=("Segoe UI", 9),
+        ).pack(fill="x", padx=18, pady=(0, 10))
+        self._processing_options_changed()
 
         status_line = tk.Frame(control_card, bg=COLORS["surface"])
         status_line.pack(fill="x", padx=18, pady=(0, 14))
@@ -767,10 +1063,25 @@ class CollectorApp(tk.Tk):
         preview_top = tk.Frame(preview_card, bg=COLORS["surface"])
         preview_top.pack(fill="x", padx=18, pady=(14, 8))
         ttk.Label(preview_top, text="Result preview", style="CardTitle.TLabel").pack(side="left")
+        ttk.Button(
+            preview_top,
+            text="下一週期",
+            style="Secondary.TButton",
+            command=lambda: self._show_prf_cycle(1),
+        ).pack(side="right", padx=(6, 0))
+        ttk.Button(
+            preview_top,
+            text="上一週期",
+            style="Secondary.TButton",
+            command=lambda: self._show_prf_cycle(-1),
+        ).pack(side="right", padx=(6, 0))
         for label, filename in [
             ("2D DAS", "plane_wave_das_bmode.png"),
+            ("PRF週期", "zero_degree_prf_cycle_montage.png"),
+            ("週期合成QA", "angle_compound_prf_index_montage.png"),
+            ("通道QA", "channel_diagnostics.png"),
+            ("回波時域", "echo_time_domain_validation.png"),
             ("Sector", "sector_scan.png"),
-            ("3D Surface", "bmode_3d_surface.png"),
             ("Spectrum", "echo_spectrum.png"),
         ]:
             ttk.Button(preview_top, text=label, style="Secondary.TButton", command=lambda name=filename: self.show_result_image(name)).pack(side="right", padx=(6, 0))
@@ -811,12 +1122,61 @@ class CollectorApp(tk.Tk):
             reverse_angle_sign=bool(self.reverse_var.get()),
         )
 
+    def _current_rx_slots(self) -> list[int]:
+        text = self.rx_channels_var.get().strip()
+        try:
+            slots = [int(token.strip()) for token in text.split(",") if token.strip()]
+        except ValueError as exc:
+            raise ValueError("HSDC接收槽必須是逗號分隔的整數，例如 9,10,11,12,13,14,15,16。") from exc
+        expected = int(self.elements_var.get())
+        if len(slots) != expected:
+            raise ValueError(f"HSDC接收槽數必須等於物理T/R陣元數 {expected}；目前為 {slots}。")
+        if len(set(slots)) != len(slots) or any(slot < 1 or slot > 16 for slot in slots):
+            raise ValueError("HSDC接收槽必須互不重複，且全部位於1…16。")
+        return slots
+
+    def _current_manual_das_slots(self, configured_slots: list[int]) -> list[int]:
+        text = self.manual_das_rx_var.get().strip()
+        try:
+            slots = [int(token.strip()) for token in text.split(",") if token.strip()]
+        except ValueError as exc:
+            raise ValueError("手動DAS槽必須是逗號分隔的整數。") from exc
+        if len(slots) < 2:
+            raise ValueError("手動DAS至少需要兩個接收槽。")
+        if len(set(slots)) != len(slots):
+            raise ValueError("手動DAS槽不能重複。")
+        if any(slot not in configured_slots for slot in slots):
+            raise ValueError(f"手動DAS槽必須是配置槽 {configured_slots} 的子集。")
+        return slots
+
+    def _processing_options_changed(self) -> None:
+        if not hasattr(self, "manual_das_rx_entry"):
+            return
+        is_manual = DUPLICATE_POLICY_OPTIONS.get(self.duplicate_policy_var.get()) == "manual"
+        self.manual_das_rx_entry.state(["!disabled"] if is_manual else ["disabled"])
+        angle_text = (
+            "2°模式只在離線重建時選取 -10,-8,…,+10；不重新採集，也不刪除原始1°文件。"
+            if ANGLE_SUBSET_OPTIONS.get(self.reconstruction_angle_subset_var.get()) == 2.0
+            else "全部模式使用capture中所有角度；可隨時切到2°子集重新運算。"
+        )
+        duplicate_text = (
+            "手動模式按你輸入的槽做DAS，適合示波器/逐SMA排查後使用。"
+            if is_manual
+            else (
+                "全部保留模式會把逐bit重複波形放在不同物理位置，只能作診斷比較。"
+                if DUPLICATE_POLICY_OPTIONS.get(self.duplicate_policy_var.get()) == "keep-all"
+                else "自動模式每個逐bit重複組只保留映射中先出現的槽；不會刪除原始BIN。"
+            )
+        )
+        self.processing_option_help_var.set(f"{duplicate_text}  {angle_text}")
+
     def _current_angles(self) -> list[float]:
         return build_angle_list(float(self.min_angle_var.get()), float(self.max_angle_var.get()), float(self.angle_step_var.get()))
 
     def recalculate_delays(self, show_errors: bool = True) -> tuple[ArrayConfig, list[float]] | None:
         try:
             config = self._current_array_config()
+            rx_slots = self._current_rx_slots()
             angles = self._current_angles()
             profiles = calculate_profiles(angles, config)
         except (ValueError, tk.TclError) as exc:
@@ -858,7 +1218,7 @@ class CollectorApp(tk.Tk):
             self.sweep_estimate_var.set(f"{len(angles)} angles · {batch_count} TX batches")
         self.array_summary_var.set(
             f"λ {wavelength_mm:.3f} mm   d/λ {config.pitch_over_wavelength:.2f}   "
-            f"{len(angles)} angles / {batch_count} batch"
+            f"{len(angles)} angles / {batch_count} batch   RX slots {rx_slots}"
         )
         warning_parts: list[str] = []
         if config.pitch_over_wavelength > 0.5:
@@ -869,7 +1229,226 @@ class CollectorApp(tk.Tk):
             warning_parts.append(f"自動分{batch_count}批重寫16個硬件Profile")
         self.array_warning_var.set(" · ".join(warning_parts))
         self._update_command_preview(config, angles, dry_run=False)
+        if hasattr(self, "auto_scan_tree"):
+            self.recalculate_auto_scan(show_errors=False)
         return config, angles
+
+    def _current_auto_scan_plan(self):
+        # The stock-CPLD block mode does not change angle on each PRF. Use one
+        # frame here only to render the angle/profile map; the per-angle PRF
+        # block length is calculated separately below.
+        frames = (
+            1
+            if self.auto_scan_mode_var.get() == AUTO_SCAN_CPLD_BLOCK_MODE
+            else int(self.auto_scan_frames_var.get())
+        )
+        return build_rapid_scan_plan(
+            RapidScanConfig(
+                angles_deg=tuple(self._current_angles()),
+                prf_hz=float(self.auto_scan_prf_var.get()),
+                frames=frames,
+                guard_prfs=int(self.auto_scan_guard_var.get()),
+            )
+        )
+
+    def recalculate_auto_scan(self, show_errors: bool = True):
+        if not hasattr(self, "auto_scan_tree"):
+            return None
+        try:
+            plan = self._current_auto_scan_plan()
+        except (ValueError, tk.TclError) as exc:
+            self.auto_scan_summary_var.set(f"參數無效：{exc}")
+            self.auto_scan_status_var.set("掃描方案無效")
+            self.auto_scan_start_button.state(["disabled"])
+            if show_errors:
+                messagebox.showerror("逐PRF掃描參數錯誤", str(exc), parent=self)
+            return None
+
+        for item in self.auto_scan_tree.get_children():
+            self.auto_scan_tree.delete(item)
+        for bank in plan.banks:
+            for event in bank.events:
+                self.auto_scan_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        f"B{event.bank_index + 1:02d}",
+                        f"{event.frame_index + 1}",
+                        f"{event.event_in_bank:03d}",
+                        f"P{event.hardware_profile:02d}",
+                        f"{event.angle_deg:+.2f}°",
+                        f"{event.time_ms:.3f} ms",
+                        f"{event.sample_offset:,}",
+                    ),
+                )
+
+        bank_sizes = ", ".join(
+            f"B{bank.bank_index + 1}={bank.samples_per_channel:,} samples/{bank.expected_bytes / 1024**2:.1f} MiB"
+            for bank in plan.banks
+        )
+        if self.auto_scan_mode_var.get() == AUTO_SCAN_CPLD_BLOCK_MODE:
+            prf_hz = float(self.auto_scan_prf_var.get())
+            pulse_count = int(self.auto_scan_frames_var.get())
+            block_samples = contiguous_prf_block_samples(prf_hz, pulse_count)
+            block_mib = (
+                block_samples * RX_CHANNELS_IN_CAPTURE_FILE * BYTES_PER_ADC_SAMPLE
+                / 1024**2
+            )
+            total_gib = block_mib * plan.angle_count / 1024.0
+            block_ms = block_samples / ADC_SAMPLE_RATE_HZ * 1000.0
+            self.auto_scan_summary_var.set(
+                f"推薦板載CPLD方案：{plan.angle_count} angles / 單bank / "
+                f"每角 {pulse_count} 個同角PRF。每BIN {block_samples:,} samples/ch，"
+                f"{block_ms:.3f} ms，{block_mib:.2f} MiB；總計約 {total_gib:.3f} GiB。"
+            )
+            self.auto_scan_gate_var.set("STOCK CPLD / READY")
+            self.auto_scan_gate_label.configure(bg=COLORS["success_soft"], fg=COLORS["success"])
+            self.auto_scan_start_button.configure(text="開始11角 × 32 PRF同步採集")
+            self.auto_scan_start_button.state(["!disabled"])
+            self.auto_scan_status_var.set(
+                "順序：選Profile → 開BF → 武裝TSW下一上升沿 → 連續錄32 PRF → 關BF → 保存。"
+            )
+        elif self.auto_scan_mode_var.get() == AUTO_SCAN_VERIFIED_MODE:
+            try:
+                repeats = int(self.repeats_var.get())
+            except (ValueError, tk.TclError):
+                repeats = 1
+            files = plan.angle_count * max(1, repeats)
+            self.auto_scan_summary_var.set(
+                f"現有流程：{plan.angle_count} angles × {max(1, repeats)} repeat = {files} BIN。"
+                "每個文件只對應一個角度，保存期間有長間隔；下表僅預覽升級後的逐PRF映射。"
+            )
+            self.auto_scan_gate_var.set("CURRENT WORKFLOW")
+            self.auto_scan_gate_label.configure(bg=COLORS["success_soft"], fg=COLORS["success"])
+            self.auto_scan_start_button.configure(text="開始已驗證逐角度掃描")
+            self.auto_scan_start_button.state(["!disabled"])
+            self.auto_scan_status_var.set("可直接調用現有Capture腳本；採集前仍須完成Capture頁五項Pre-flight。")
+        else:
+            self.auto_scan_summary_var.set(
+                f"快速方案：{plan.angle_count} angles · {plan.bank_count} bank/{plan.file_count} BIN · "
+                f"理想掃描 {plan.sweep_time_ms:.3f} ms · 實際記錄 {plan.captured_time_ms:.3f} ms · "
+                f"總量 {plan.expected_bytes / 1024**2:.1f} MiB · {bank_sizes}"
+            )
+            self.auto_scan_gate_var.set("FIRMWARE REQUIRED")
+            self.auto_scan_gate_label.configure(bg=COLORS["warning_soft"], fg=COLORS["warning"])
+            self.auto_scan_start_button.configure(text="快速掃描尚未解鎖")
+            self.auto_scan_start_button.state(["disabled"])
+            confirmed = sum(1 for variable in self.auto_scan_confirm_vars if variable.get())
+            self.auto_scan_status_var.set(
+                f"硬件門檻 {confirmed}/3；即使全部勾選，仍須由軟件讀回快速掃描固件版本後才能解鎖。"
+            )
+        return plan
+
+    def _auto_scan_mode_changed(self) -> None:
+        if self.auto_scan_mode_var.get() == AUTO_SCAN_CPLD_BLOCK_MODE:
+            self.min_angle_var.set("-10")
+            self.max_angle_var.set("10")
+            self.angle_step_var.set("2")
+            self.auto_scan_prf_var.set("1000")
+            self.auto_scan_frames_var.set("32")
+            self.auto_scan_guard_var.set("1")
+            self.recalculate_delays(show_errors=False)
+        self.recalculate_auto_scan(show_errors=False)
+
+    def export_auto_scan_plan(self) -> None:
+        plan = self.recalculate_auto_scan(show_errors=True)
+        if plan is None:
+            return
+        try:
+            output_root = Path(self.output_root_var.get()).expanduser().resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("無法建立輸出目錄", str(exc), parent=self)
+            return
+        default_name = time.strftime("rapid_scan_plan_%Y%m%d_%H%M%S.json")
+        selected = filedialog.asksaveasfilename(
+            parent=self,
+            title="保存逐PRF掃描方案",
+            initialdir=str(output_root),
+            initialfile=default_name,
+            defaultextension=".json",
+            filetypes=[("JSON plan", "*.json")],
+        )
+        if not selected:
+            return
+        payload = plan_as_dict(plan)
+        payload["array"] = {
+            "elements": self.elements_var.get(),
+            "pitch_mm": self.pitch_var.get(),
+            "frequency_mhz": self.frequency_var.get(),
+            "rx_hsdc_slots": self.rx_channels_var.get(),
+        }
+        payload["ui_mode"] = self.auto_scan_mode_var.get()
+        if self.auto_scan_mode_var.get() == AUTO_SCAN_CPLD_BLOCK_MODE:
+            prf_hz = float(self.auto_scan_prf_var.get())
+            pulse_count = int(self.auto_scan_frames_var.get())
+            payload["stock_cpld_same_angle_block"] = {
+                "prf_hz": prf_hz,
+                "prfs_per_bin": pulse_count,
+                "samples_per_channel": contiguous_prf_block_samples(prf_hz, pulse_count),
+                "trigger_edge": "rising",
+                "required_capture_trigger_input": "TSW14J50 J13 TRIG_IN",
+                "afe_j25_role": "optional receive-event reference; not HSDC capture trigger",
+            }
+        try:
+            path = Path(selected)
+            path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("保存方案失敗", str(exc), parent=self)
+            return
+        self.auto_scan_status_var.set(f"方案已保存：{path}")
+
+    def launch_auto_scan(self, dry_run: bool) -> None:
+        plan = self.recalculate_auto_scan(show_errors=True)
+        if plan is None:
+            return
+        if self.auto_scan_mode_var.get() == AUTO_SCAN_CPLD_BLOCK_MODE:
+            prf_hz = float(self.auto_scan_prf_var.get())
+            pulse_count = int(self.auto_scan_frames_var.get())
+            block_samples = contiguous_prf_block_samples(prf_hz, pulse_count)
+            self.launch_capture(
+                dry_run=dry_run,
+                status_var=self.auto_scan_status_var,
+                progress=self.auto_scan_progress,
+                button=self.auto_scan_start_button,
+                title="HKUST Bio-data Collector - Stock CPLD synchronized block scan",
+                samples=block_samples,
+                repeats=1,
+                trigger="hardware",
+                expected_prf_hz=prf_hz,
+                expected_prfs_per_bin=pulse_count,
+            )
+            return
+        if self.auto_scan_mode_var.get() == AUTO_SCAN_VERIFIED_MODE:
+            self.launch_capture(
+                dry_run=dry_run,
+                status_var=self.auto_scan_status_var,
+                progress=self.auto_scan_progress,
+                button=self.auto_scan_start_button,
+                title="HKUST Bio-data Collector - Verified angle scan",
+            )
+            return
+        if dry_run:
+            requirements = "\n".join(
+                f"B{bank.bank_index + 1}: {len(bank.angles_deg)} profiles, "
+                f"{bank.event_count} emissions, {bank.samples_per_channel:,} samples/channel"
+                for bank in plan.banks
+            )
+            messagebox.showinfo(
+                "逐PRF時序檢查通過",
+                f"方案在數學上有效：\n{requirements}\n\n"
+                "這只是時序dry run；沒有連接GUI、沒有寫TX7316、沒有啟動HSDC。",
+                parent=self,
+            )
+            self.auto_scan_status_var.set("Dry run通過；請保存JSON並交給CPLD/FPGA sequencer實現。")
+            return
+        messagebox.showwarning(
+            "快速掃描硬件未解鎖",
+            "原廠TX7316EVM CPLD不能自動逐SYNC切換Profile。\n\n"
+            "必須先實現並驗證：profile counter、frame-start復位、SPI選擇時序、HSDC同時arm，以及固件版本讀回。"
+            "在此之前只能使用『已驗證：每角度獨立BIN』模式。",
+            parent=self,
+        )
 
     def _doppler_source_changed(self) -> None:
         if self.doppler_prf_source_var.get().startswith("Onboard CPLD"):
@@ -1083,6 +1662,8 @@ class CollectorApp(tk.Tk):
         repeats: int | None = None,
         settle: float | None = None,
         trigger: str | None = None,
+        expected_prf_hz: float | None = None,
+        expected_prfs_per_bin: int | None = None,
     ) -> list[str]:
         samples = int(self.samples_var.get()) if samples is None else int(samples)
         repeats = int(self.repeats_var.get()) if repeats is None else int(repeats)
@@ -1096,12 +1677,18 @@ class CollectorApp(tk.Tk):
         trigger = self.trigger_var.get() if trigger is None else trigger
         if trigger not in {"normal", "software", "hardware"}:
             raise ValueError("Trigger模式無效。")
+        if expected_prf_hz is not None and expected_prf_hz <= 0:
+            raise ValueError("Expected PRF must be positive.")
+        if expected_prfs_per_bin is not None and expected_prfs_per_bin <= 0:
+            raise ValueError("Expected PRFs/BIN must be positive.")
 
         arguments = [
             "--dry-run" if dry_run else "--capture",
             f"--angles={format_angles_cli(angles)}",
             "--tx-elements",
             str(config.elements),
+            "--rx-channels",
+            ",".join(str(slot) for slot in self._current_rx_slots()),
             "--pitch-mm",
             f"{config.pitch_mm:.6g}",
             "--element-width-mm",
@@ -1123,8 +1710,22 @@ class CollectorApp(tk.Tk):
             "--output-root",
             str(Path(self.output_root_var.get()).expanduser()),
         ]
+        if expected_prf_hz is not None:
+            arguments.extend(["--expected-prf-hz", f"{expected_prf_hz:.9g}"])
+        if expected_prfs_per_bin is not None:
+            arguments.extend(["--expected-prfs-per-bin", str(expected_prfs_per_bin)])
         if not dry_run:
             arguments.append("--enable-internal-bf")
+            # For the three hardware-qualified presets, make the requested
+            # frequency authoritative: program Profile 0 and Reg25, pulse
+            # LOAD_PROF, then require a bit-for-bit readback before capture.
+            # This prevents the UI frequency field from changing metadata only
+            # while TX7316 is still using a pattern left by an earlier run.
+            if any(
+                abs(config.center_frequency_mhz - preset_mhz) < 1e-9
+                for preset_mhz in (1.0, 1.5, 2.0, 2.5, 4.0)
+            ):
+                arguments.append("--program-known-pattern")
         if config.reverse_angle_sign:
             arguments.append("--reverse-angle-sign")
         if max(abs(value) for value in angles) > 10.0:
@@ -1162,7 +1763,13 @@ class CollectorApp(tk.Tk):
         command_parts = [str(PYTHON27), str(AUTOMATION_SCRIPT), *arguments]
         command_line = subprocess.list2cmdline(command_parts)
         console_title = f"{title} - Dry Run" if dry_run else title
-        console_body = f'title {console_title} & {command_line} & echo. & echo Process finished. Review the log above. & pause'
+        console_body = (
+            f'title {console_title} & {command_line} & '
+            'if errorlevel 1 '
+            '(echo. & echo CAPTURE FAILED. Review ERROR and run.log above.) '
+            'else '
+            '(echo. & echo CAPTURE SUCCEEDED.) & pause'
+        )
         if status_var is self.doppler_status_var:
             self.doppler_command_var.set(command_line)
         else:
@@ -1205,13 +1812,37 @@ class CollectorApp(tk.Tk):
         }
         self.after(1500, self._poll_capture_manifest)
 
-    def launch_capture(self, dry_run: bool) -> None:
+    def launch_capture(
+        self,
+        dry_run: bool,
+        status_var: tk.StringVar | None = None,
+        progress: ttk.Progressbar | None = None,
+        button: ttk.Button | None = None,
+        title: str = "HKUST Bio-data Collector - Acquisition",
+        samples: int | None = None,
+        repeats: int | None = None,
+        trigger: str | None = None,
+        expected_prf_hz: float | None = None,
+        expected_prfs_per_bin: int | None = None,
+    ) -> None:
+        status_var = self.capture_status_var if status_var is None else status_var
+        progress = self.capture_progress if progress is None else progress
+        button = self.capture_button if button is None else button
         calculated = self.recalculate_delays(show_errors=True)
         if calculated is None:
             return
         config, angles = calculated
         try:
-            arguments = self._capture_arguments(config, angles, dry_run)
+            arguments = self._capture_arguments(
+                config,
+                angles,
+                dry_run,
+                samples=samples,
+                repeats=repeats,
+                trigger=trigger,
+                expected_prf_hz=expected_prf_hz,
+                expected_prfs_per_bin=expected_prfs_per_bin,
+            )
         except ValueError as exc:
             messagebox.showerror("採集參數錯誤", str(exc), parent=self)
             return
@@ -1222,6 +1853,20 @@ class CollectorApp(tk.Tk):
             messagebox.showwarning("尚未完成 Pre-flight", "請逐項確認五個採集前條件。", parent=self)
             return
         if not dry_run:
+            if trigger == "hardware":
+                trigger_ready = messagebox.askyesno(
+                    "確認TSW外部觸發連線",
+                    "硬件觸發模式要求：\n\n"
+                    "• TX7316 TP18／已核對的SYNCP引腳 → 有源緩衝／電平調理 → TSW14J50 J13 TRIG_IN\n"
+                    "• AFE J25只是可選事件參考，不能代替TSW J13\n"
+                    "• 1 kHz SYNCP沒有接到AFE LMK時鐘輸入\n"
+                    "• 沒有把TX7316高壓OUT接到任何時鐘／觸發口\n\n"
+                    "以上均已確認，繼續嗎？",
+                    parent=self,
+                    icon="warning",
+                )
+                if not trigger_ready:
+                    return
             if len(angles) > HARDWARE_DELAY_PROFILES_PER_BATCH:
                 batch_count = int(math.ceil(len(angles) / HARDWARE_DELAY_PROFILES_PER_BATCH))
                 proceed = messagebox.askyesno(
@@ -1249,10 +1894,10 @@ class CollectorApp(tk.Tk):
         self._launch_capture_process(
             arguments=arguments,
             dry_run=dry_run,
-            status_var=self.capture_status_var,
-            progress=self.capture_progress,
-            button=self.capture_button,
-            title="HKUST Bio-data Collector - Acquisition",
+            status_var=status_var,
+            progress=progress,
+            button=button,
+            title=title,
         )
 
     def _poll_capture_manifest(self) -> None:
@@ -1290,6 +1935,8 @@ class CollectorApp(tk.Tk):
                 progress.stop()
                 button.state(["!disabled"])
                 self.capture_watch = None
+                if button is self.auto_scan_start_button:
+                    self.recalculate_auto_scan(show_errors=False)
                 self.refresh_capture_runs(select=run)
                 if status == "complete":
                     messagebox.showinfo("採集完成", f"已保存 {captures} 個 BIN 文件：\n{run}", parent=self)
@@ -1317,6 +1964,35 @@ class CollectorApp(tk.Tk):
         if self.capture_folder_var.get():
             self.load_existing_results()
 
+    def _clear_analysis_cache(self) -> None:
+        """Delete only generated analysis artifacts for the selected capture."""
+        if self.processing_active:
+            messagebox.showinfo("正在運算", "請等待目前的運算結束後再清除。", parent=self)
+            return
+        folder = Path(self.capture_folder_var.get()).expanduser().resolve()
+        analysis = (folder / "analysis").resolve()
+        if not folder.is_dir() or analysis.parent != folder:
+            messagebox.showerror("路徑無效", "無法確認所選capture的analysis子目錄。", parent=self)
+            return
+        if not analysis.exists():
+            self.processing_status_var.set("此capture沒有分析緩存。")
+            return
+        if not messagebox.askyesno(
+            "清除分析緩存",
+            f"只刪除以下自動生成的分析結果，不會刪除原始BIN：\n\n{analysis}",
+            parent=self,
+        ):
+            return
+        shutil.rmtree(analysis)
+        self.preview_path = None
+        self.preview_photo = None
+        self.preview_filename = "plane_wave_das_bmode.png"
+        self.current_prf_cycle_index = -1
+        self.preview_label.configure(image="", text="分析緩存已清除；原始BIN保留。請點擊「強制重新運算」。")
+        self.preview_source_var.set(f"Run: {folder.name} · analysis cache cleared")
+        self.processing_status_var.set("分析緩存已清除；原始BIN未刪除。")
+        self.result_summary_var.set("等待從原始BIN重新運算。")
+
     def start_processing(self) -> None:
         if self.processing_active:
             return
@@ -1328,13 +2004,42 @@ class CollectorApp(tk.Tk):
         if not RECONSTRUCTION_SCRIPT.exists():
             messagebox.showerror("找不到處理腳本", str(RECONSTRUCTION_SCRIPT), parent=self)
             return
+        try:
+            rx_slots = self._current_rx_slots()
+            duplicate_policy = DUPLICATE_POLICY_OPTIONS[self.duplicate_policy_var.get()]
+            angle_subset_step = ANGLE_SUBSET_OPTIONS[self.reconstruction_angle_subset_var.get()]
+            manual_das_slots = (
+                self._current_manual_das_slots(rx_slots)
+                if duplicate_policy == "manual"
+                else None
+            )
+        except (KeyError, ValueError, tk.TclError) as exc:
+            messagebox.showerror("接收槽配置無效", str(exc), parent=self)
+            return
         self.processing_active = True
         self.process_button.state(["disabled"])
         self.processing_progress.start(12)
-        self.processing_status_var.set("正在進行事件對齊、帶通、DAS、角度合成與3D曲面繪製…")
+        self.processing_status_var.set("正在重新讀取BIN、驗證PRF事件、帶通、DAS並生成逐週期與時域QA圖…")
 
         def worker() -> None:
-            command = [sys.executable, str(RECONSTRUCTION_SCRIPT), "--input-dir", str(folder)]
+            command = [
+                sys.executable,
+                str(RECONSTRUCTION_SCRIPT),
+                "--input-dir",
+                str(folder),
+                "--rx-channels",
+                ",".join(str(slot) for slot in rx_slots),
+                "--duplicate-policy",
+                duplicate_policy,
+            ]
+            if manual_das_slots is not None:
+                command.extend(
+                    ["--das-rx-channels", ",".join(str(slot) for slot in manual_das_slots)]
+                )
+            if angle_subset_step is not None:
+                command.extend(
+                    ["--reconstruction-angle-step-deg", f"{angle_subset_step:g}"]
+                )
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.after(0, lambda: self._processing_finished(folder, result))
 
@@ -1350,13 +2055,13 @@ class CollectorApp(tk.Tk):
             return
         self.processing_status_var.set(f"處理完成：{folder / 'analysis'}")
         self.load_existing_results()
-        self.show_result_image("bmode_3d_surface.png")
+        self.show_result_image("plane_wave_das_bmode.png")
 
     def load_existing_results(self) -> None:
         folder = Path(self.capture_folder_var.get()).expanduser()
         summary = read_json(folder / "analysis" / "analysis_summary.json")
         if not summary:
-            self.result_summary_var.set("此採集尚未生成 analysis_summary.json。\n\n點擊「運算並繪製2D / 3D」。")
+            self.result_summary_var.set("此採集尚未生成 analysis_summary.json。\n\n點擊「強制重新運算」。")
             self.preview_path = None
             self.preview_photo = None
             self.preview_source_var.set(f"Run: {folder.name or '—'} · 尚未生成分析結果")
@@ -1373,19 +2078,66 @@ class CollectorApp(tk.Tk):
         short_fingerprint = fingerprint[:12]
         recorded_source = Path(str(summary.get("input_directory", folder))).name
         source_matches = recorded_source.casefold() == folder.name.casefold()
+        requested_frequency = summary.get(
+            "requested_tx_center_frequency_mhz",
+            summary.get("center_frequency_mhz", "—"),
+        )
+        received_frequency = summary.get(
+            "received_pulse_ringdown_peak_mhz",
+            summary.get("measured_echo_spectral_peak_mhz", "—"),
+        )
+        delayed_echo_frequency = summary.get("delayed_echo_window_peak_mhz", "—")
+        fast_time_stability = summary.get("zero_degree_fast_time_stability", {})
+        fast_time_stable = fast_time_stability.get("stable")
+        fast_time_drift = fast_time_stability.get("maximum_axial_drift_mm", "—")
+        fast_time_text = (
+            "通過" if fast_time_stable is True else
+            "失敗；移動白帶應視為偽影候選" if fast_time_stable is False else
+            "尚未評估"
+        )
+        zero_cycle_count = summary.get("zero_degree_prf_cycle_count", 0)
+        compound_cycle_count = summary.get("angle_compound_prf_index_count", 0)
+        pattern_check = summary.get("tx_waveform_reference_check", {})
+        reference_frequency = pattern_check.get("reference_base_pattern_repetition_mhz", "—")
+        pattern_status = pattern_check.get("status", "未記錄pattern readback")
+        physical_tr = summary.get("physical_tr_elements", summary.get("active_tx_elements", "—"))
+        unique_rx = summary.get("unique_rx_waveforms_used", len(summary.get("receiver_channels_used_1_based", [])))
+        configured_rx = summary.get("configured_rx_hsdc_slots_1_based", "舊結果未記錄")
+        used_rx = summary.get("receiver_channels_used_1_based", [])
+        dropped_slots = summary.get("dropped_duplicate_slots_1_based", [])
+        excluded_slots = summary.get("excluded_rx_slots_1_based", dropped_slots)
+        duplicate_policy = summary.get("duplicate_handling_policy", "舊結果未記錄")
+        selected_rx_count = summary.get("selected_rx_slot_count", len(used_rx))
+        source_angle_count = summary.get("source_angle_count", len(summary.get("angles_deg", [])))
+        used_angle_count = summary.get("reconstruction_angle_subset_count", len(summary.get("angles_deg", [])))
+        reconstruction_step = summary.get("reconstruction_angle_step_deg", None)
         self.result_summary_var.set(
             f"資料來源：{recorded_source}\n"
             f"SHA-256：{short_fingerprint}…\n"
             f"來源核對：{'一致' if source_matches else '不一致，請重新運算'}\n\n"
-            f"角度：{len(summary.get('angles_deg', []))}\n"
-            f"TX批次：{summary.get('tx_profile_batch_count', 1)}\n"
-            f"獨立RX：{len(summary.get('receiver_channels_used_1_based', []))}\n"
+            f"角度：使用 {used_angle_count}/{source_angle_count}；離線步進 {reconstruction_step or '全部'}\n"
+            f"角度配置批次：{summary.get('angle_profile_programming_batch_count', summary.get('tx_profile_batch_count', 1))}\n"
+            f"物理T/R陣元：{physical_tr}\n"
+            f"HSDC數字槽：{summary.get('hsdc_output_slots', 16)}\n"
+            f"配置接收槽（A1…AN）：{configured_rx}\n"
+            f"本次DAS使用槽：{used_rx}\n"
+            f"重複處理策略：{duplicate_policy}\n"
+            f"選中槽/可區分波形：{selected_rx_count}/{unique_rx}\n"
+            f"本次排除槽：{excluded_slots or '無'}\n"
             f"陣元間距：{summary.get('array_pitch_mm', '—')} mm\n"
-            f"頻譜峰值：{summary.get('measured_echo_spectral_peak_mhz', '—')} MHz\n"
+            f"TX設定頻率：{requested_frequency} MHz\n"
+            f"參考pattern基頻：{reference_frequency} MHz\n"
+            f"接收振鈴峰（非TX讀回）：{received_frequency} MHz\n"
+            f"延遲回波窗主峰：{delayed_echo_frequency} MHz\n"
+            f"Pattern核對：{pattern_status}\n"
+            f"快時間穩定性：{fast_time_text}；最大軸向漂移 {fast_time_drift} mm\n"
             f"PRF：約 {self._median_prf(summary):.3f} Hz\n"
-            f"重複通道：{duplicates or '無'}\n\n"
+            f"0°連續脈衝圖：{zero_cycle_count} 張\n"
+            f"跨角度序號QA圖：{compound_cycle_count} 張\n"
+            f"逐bit重複數字槽：{duplicates or '無'}\n\n"
             f"反射候選\n{reflector_text}\n\n"
-            "提示：3D曲面是輔助視圖；距離判讀以2D與軸向曲線為準。"
+            "注意：0 dB/強回波為白色，−45 dB/弱回波為黑色。接收振鈴峰不是TX7316端電壓頻率的直接量測。\n"
+            "0°圖是同一BIN內連續PRF脈衝；跨角度QA圖的角度採集時間不同，不能當作心動週期影像。"
         )
         # Always resolve the preview against the currently selected run. The
         # previous implementation only did this when preview_path was None,
@@ -1422,6 +2174,23 @@ class CollectorApp(tk.Tk):
             f"Run: {folder.name}  ·  File: {filename}  ·  SHA-256: {fingerprint}…  ·  {generated}"
         )
         self._render_preview()
+
+    def _show_prf_cycle(self, direction: int) -> None:
+        """Step through consecutive 0-degree emissions from the selected run."""
+        folder = Path(self.capture_folder_var.get()).expanduser()
+        summary = read_json(folder / "analysis" / "analysis_summary.json")
+        cycles = summary.get("zero_degree_prf_cycles", []) if summary else []
+        if not cycles:
+            messagebox.showinfo(
+                "尚無逐週期結果",
+                "請先重新執行離線處理；新版會在 analysis/prf_cycles/zero_degree 生成每個PRF週期的圖。",
+                parent=self,
+            )
+            return
+        self.current_prf_cycle_index = (self.current_prf_cycle_index + direction) % len(cycles)
+        filename = str(cycles[self.current_prf_cycle_index].get("file", ""))
+        if filename:
+            self.show_result_image(filename)
 
     def _render_preview(self) -> None:
         if self.preview_path is None or not self.preview_path.exists():
@@ -1496,6 +2265,10 @@ class CollectorApp(tk.Tk):
             "elements": self.elements_var.get(),
             "pitch_mm": self.pitch_var.get(),
             "element_width_mm": self.width_var.get(),
+            "rx_hsdc_slots": self.rx_channels_var.get(),
+            "duplicate_policy_label": self.duplicate_policy_var.get(),
+            "manual_das_rx_slots": self.manual_das_rx_var.get(),
+            "reconstruction_angle_subset_label": self.reconstruction_angle_subset_var.get(),
             "center_frequency_mhz": self.frequency_var.get(),
             "sound_speed_m_s": self.sound_speed_var.get(),
             "delay_quantum_ns": self.quantum_var.get(),
@@ -1508,6 +2281,10 @@ class CollectorApp(tk.Tk):
             "settle_seconds": self.settle_var.get(),
             "trigger": self.trigger_var.get(),
             "output_root": self.output_root_var.get(),
+            "auto_scan_mode": self.auto_scan_mode_var.get(),
+            "auto_scan_prf_hz": self.auto_scan_prf_var.get(),
+            "auto_scan_frames": self.auto_scan_frames_var.get(),
+            "auto_scan_guard_prfs": self.auto_scan_guard_var.get(),
             "doppler_prf_source": self.doppler_prf_source_var.get(),
             "doppler_prf_hz": self.doppler_prf_var.get(),
             "doppler_steering_angle_deg": self.doppler_steering_var.get(),
@@ -1539,6 +2316,14 @@ def self_test() -> int:
     fine_profiles = calculate_profiles(fine_angles, config)
     if len(fine_profiles) != 21 or math.ceil(len(fine_profiles) / HARDWARE_DELAY_PROFILES_PER_BATCH) != 2:
         raise RuntimeError("1-degree batched sweep self-test failed")
+    rapid_plan = build_rapid_scan_plan(
+        RapidScanConfig(angles_deg=tuple(fine_angles), prf_hz=1000.0, frames=1, guard_prfs=1)
+    )
+    if rapid_plan.bank_count != 2 or rapid_plan.banks[0].samples_per_channel != 2_043_904:
+        raise RuntimeError("rapid-scan timing self-test failed")
+    stock_cpld_samples = contiguous_prf_block_samples(1000.0, 32)
+    if stock_cpld_samples != 3_837_952:
+        raise RuntimeError("stock-CPLD 32-PRF block self-test failed")
     doppler = calculate_doppler(DopplerConfig())
     if not 170.0 < doppler.pulses_per_raw_block < 180.0:
         raise RuntimeError("PW Doppler timing self-test failed")
@@ -1546,6 +2331,14 @@ def self_test() -> int:
     print("HKUST Bio-data collector self-test")
     print(f"delay profiles: {len(profiles)}")
     print(f"1-degree sweep: {len(fine_profiles)} angles / 2 hardware batches")
+    print(
+        f"rapid-scan plan: {rapid_plan.angle_count} angles / {rapid_plan.bank_count} BIN / "
+        f"{rapid_plan.captured_time_ms:.3f} ms"
+    )
+    print(
+        f"stock-CPLD block: 11 angles / 32 PRF per BIN / "
+        f"{stock_cpld_samples:,} samples per channel"
+    )
     print(f"PW Doppler default block: {doppler.block_duration_ms:.2f} ms / {doppler.pulses_per_raw_block:.1f} pulses")
     print(f"automation script: {AUTOMATION_SCRIPT}")
     print(f"reconstruction script: {RECONSTRUCTION_SCRIPT}")
@@ -1562,7 +2355,7 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--start-page",
-        choices=["array", "capture", "doppler", "processing"],
+        choices=["array", "capture", "auto_scan", "doppler", "processing"],
         default="array",
         help="page displayed when the desktop UI opens",
     )

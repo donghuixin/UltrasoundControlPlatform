@@ -25,7 +25,7 @@ class ArrayConfig:
     elements: int = 8
     pitch_mm: float = 1.59
     element_width_mm: float = 1.0
-    center_frequency_mhz: float = 1.0
+    center_frequency_mhz: float = 2.5
     sound_speed_m_s: float = 1540.0
     delay_quantum_ns: float = 5.0
     reverse_angle_sign: bool = False

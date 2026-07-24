@@ -11,7 +11,7 @@ echo   4. Gel/probe/wiring/power rails are ready; CW mode is OFF.
 echo   5. This is a gel/phantom test, not a human test.
 echo ================================================================
 echo.
-set /p CONFIRM=Type CAPTURE and press Enter to start:
+set /p "CONFIRM=Type CAPTURE and press Enter to start: "
 if /I not "%CONFIRM%"=="CAPTURE" (
     echo Cancelled. No hardware was changed.
     pause

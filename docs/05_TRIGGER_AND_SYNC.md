@@ -2,7 +2,7 @@
 
 ## 端口角色
 
-- `TX7316 J7 pin2 SYNCP/TR_BF_SYNC`：板載CPLD輸出的約2.5 V、約1 kHz同步觀測/扇出點。
+- `TX7316已確認的SYNCP測試點`：板載CPLD輸出的約2.5 V、約1 kHz同步觀測點。不同EVM絲印/排針位置先按原理圖與斷電導通確認。
 - `TSW14J50 J13`：外部Capture Start輸入，最大3.3 V；不是ADC sample clock，也不是每個脈衝的存檔命令。
 - `AFE J25 TX_TRG`：AFE TGC/demod等發射同步的輸入；Analog Input固定增益模式可以不接。
 - `TSW J7/J8 Sync A/B`：多板或特定同步拓撲；目前單AFE-FMC-單TSW不使用。
@@ -15,7 +15,7 @@
 
 ## Hardware模式（原板1 kHz）
 
-接線：J7 pin2中心信號→TSW J13中心；TX AGND→J13外殼。單根短線、確認2.5 V邏輯可直接試；長線或多分支使用3.3 V兼容buffer。
+接線：SYNCP→高輸入阻抗、3.3 V兼容buffer/level conditioner→TSW J13；TX/TSW邏輯地建立低阻參考。需要同步TGC時再由buffer扇出到AFE J25。不要被動Y分支，也不要把SYNCP接AFE LMK或TSW Sync A/B。
 
 流程：
 
@@ -24,6 +24,10 @@
 3. 腳本TX_BF ON；
 4. HSDC等待下一個J13邊沿並讀DDR；
 5. 捕獲完成後腳本立刻TX_BF OFF，再保存BIN。
+
+SYNCP在`TX_BF_MODE=0`時仍自由運行屬正常現象。腳本在profile切換與慢速存檔期間解除hardware trigger，避免錯誤邊沿先啟動下一塊DDR。
+
+同一時間只能有一個HSDC Automation客戶端。重複點擊或另一採集命令仍在運行時，第二個`Connect_Board`可能返回code 66；停止所有採集並重啟HSDC Pro後再試。
 
 如果一直等，先關高壓/TX_BF，檢查SYNCP是否存在、J13極性/電平、HSDC INI與Trigger Option。不要靠Ctrl+C強行把半完成run當成成功。
 

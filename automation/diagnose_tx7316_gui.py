@@ -19,12 +19,7 @@ import sys
 import time
 
 
-MODULE_CANDIDATES = [
-    os.environ.get("TX7316_EVM_PYTHON_MODULE"),
-    r"E:\Program Files (x86)\Texas Instruments\TX7316 EVM\Scripts\TX7316 EVM.py",
-    r"C:\Program Files (x86)\Texas Instruments\TX7316 EVM\Scripts\TX7316 EVM.py",
-]
-MODULE = next((path for path in MODULE_CANDIDATES if path and os.path.isfile(path)), MODULE_CANDIDATES[1])
+MODULE = r"E:\Program Files (x86)\Texas Instruments\TX7316 EVM\Scripts\TX7316 EVM.py"
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tx_gui_diagnostic.log")
 
 PORTS = [6640.0, float("nan"), 3370.0]

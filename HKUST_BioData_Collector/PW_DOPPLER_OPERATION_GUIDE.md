@@ -113,8 +113,8 @@ v_N = c * PRF / (4 * f0 * |cos(theta)|)
 ### 6.1 保持原板不改：只能使用1 kHz
 
 - TX7316EVM硬件復位後，板載CPLD輸出1 kHz `TR_BF_SYNC`和`TR_EN`。
-- `J7 pin 2`不得接函數發生器或其他外部輸出；它可用作高阻觀測，也可在已確認約2.5 V邏輯後，以短線連到TSW J13作Capture Start硬件觸發。
-- AFE J25在raw Analog Input固定增益模式可留空；HSDC使用Normal Capture時採集起點相對發射隨機，SYNCP→TSW J13則可令單個block從下一個1 kHz邊沿開始。
+- `J7 pin 2`只用高阻探頭觀察同步，不連AFE或函數發生器。
+- AFE J25可暫時留空；HSDC使用Normal Capture時，採集起點相對發射是隨機的。
 - 可用於檢查是否存在可重複的脈衝和低速頻移，不適合準確的深度門長時間PW Doppler。
 
 ### 6.2 需要5-20 kHz：必須改變CPLD/同步硬件

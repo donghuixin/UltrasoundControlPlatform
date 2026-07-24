@@ -23,6 +23,7 @@
 8. [故障排查與驗收](docs/07_TROUBLESHOOTING.md)
 9. [本機TI軟件、CPLD工程與資料來源](docs/08_LOCAL_SOFTWARE_AND_SOURCES.md)
 10. [1.59 mm 陣列、柵瓣與超分辨率思路](automation/ARRAY_1P59MM_AND_SUPERRESOLUTION.md)
+11. [2026-07-24 採集與重建軟件更新](docs/09_RECENT_SOFTWARE_UPDATES.md)
 
 ## 目前硬件基線
 
@@ -32,7 +33,7 @@
 | 陣元 | `1.0 × 1.0 × 0.4 mm` |
 | 中心間距 | `1.59 mm` |
 | AFE/HSDC | 16 數字通道、120 MSPS、8 lanes、Subclass 1 |
-| B-mode 起步頻率 | 1 MHz；實際聲學頻率須由回波頻譜或水聽器驗證 |
+| B-mode候選頻率 | 1、1.5、2、2.5 MHz；寄存器讀回驗證數字pattern，聲學輸出仍須示波器/水聽器驗證 |
 | 掃描 | `-10°…+10°`，1°或2°步進，超過16角度自動分批 |
 | 原板 PRF | CPLD 固定約1 kHz；GUI不能改成20 kHz |
 | 安全範圍 | 凝膠、水槽、流體仿體，不接人體 |
@@ -63,7 +64,7 @@ HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd
 - 把 [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 複製到：
   `E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Details\ADC files`
 - 不使用`AFE58JD48_120M_8L_MANUAL`：該舊文件的`JESD IP Core_M=5`，與16通道輸出不一致；`M16_FIXED`使用`M=16`。
-- TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。它是目前 TI EVM 安裝包中的原始文件名；實際配置為`REPEAT_COUNT=3`，即4個聲學週期，與SBOU224A的`Internal: 1 MHz, 4 pulses`一致。載入後仍須核對實際輸出頻譜、Reg24/Reg25 與 CW OFF。
+- TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。自動採集現已支持1、1.5、2、2.5、4 MHz白名單pattern寫入與寄存器回讀；回讀不匹配時Fail Closed。載入任何cfg後仍須確認`TX_BF_MODE`與CW OFF。
 - 第一次啟動 UI 會讀取 `collector_config.example.json`，退出時把本機設置寫入被 Git 忽略的 `collector_config.json`。
 
 若 TI 軟件安裝位置不同，可在啟動採集前設置：
@@ -92,7 +93,7 @@ auto_runs/                     本機採集輸出；不會提交到 Git
 
 ## 已知邊界
 
-- UI 中的中心頻率只參與延時、波長、檔名和重建參數；它不會自動改寫 TX7316 Pattern Profile。
+- UI 中選擇白名單頻率（1、1.5、2、2.5、4 MHz）並啟用已知pattern寫入時，採集腳本會在`TX_BF_MODE=OFF`期間寫入TX7316 Pattern Profile並做寄存器回讀；不在白名單或回讀不匹配時會Fail Closed。中心頻率仍同時用於延時、波長、檔名和重建參數。
 - HSDC 的 `ADC Input Target Frequency`只影響 FFT/標記，不控制 TX 頻率。
 - 原板 `J7 pin 2 SYNCP`是 CPLD 的約2.5 V、1 kHz輸出，不是外部20 kHz輸入口。
 - 無共同硬件觸發時，多角度資料只能做靜態軟對齊，不是嚴格相干複合。

@@ -17,8 +17,6 @@
 
    `Run_HKUST_BioData_Collector_as_admin.cmd`
 
-採集命令窗已關閉QuickEdit選取暫停功能，鼠標點擊不會再讓Python看似卡死；旋轉符號與`alive, elapsed`是API心跳，BIN保存時同時顯示MB和百分比。只有心跳停止且窗口沒有「選擇/Select」前綴時才按錯誤流程排查，不要用`Ctrl+C`作為API繼續按鈕。
-
 GUI 使用目前 PATH 中的 Python 3；硬件採集固定調用 `C:\Python27\python.exe`，因為 TX7316 Device GUI DLL 是32-bit。
 
 界面啟動時會啟用 Windows Per-Monitor DPI Awareness v2；所有界面文字使用 Segoe UI / Cascadia Mono 的 TrueType 矢量字體，不再由 Windows 將整個窗口作低解析度位圖拉伸。
@@ -30,6 +28,10 @@ GUI 使用目前 PATH 中的 Python 3；硬件採集固定調用 `C:\Python27\py
 - 輸入陣元數、中心間距、陣元寬度、中心頻率、聲速和Delay Quantum。
 - TX7316 G1只支持 `A1–A8`，所以陣元數限制為 `2–8`。
 - 少於8個陣元時，只有 `A1…AN`參與延時計算，其餘Delay字段填零；未使用TX輸出仍需物理斷開或在TX GUI關閉。
+- 「A1…AN 對應的 HSDC 接收槽」必須按實際接線填寫。本平台目前確認為
+  `9,10,11,12,13,14,15,16`；採集腳本會把這個映射寫入manifest，離線重建不再假設使用槽1–8。
+- 重複槽處理不再寫死。重建頁可選：自動保留映射中先出現者、保留全部配置槽作診斷，或在示波器／逐SMA排查後手動指定DAS槽。
+  所有策略只影響離線重建，不會改寫或刪除原始BIN。在完成真實SMA到HSDC槽映射前，圖像只能視為診斷結果。
 - UI 可選 `1°`（精細）或 `2°`（快速）角度步進。`-10°…+10° / 1°` 共21個角度。
 - TX7316一次只有16個Delay Profile；超過16角度時採集腳本會在`TX_BF_MODE=OFF`期間自動分批重寫，例如21角度使用`16+5`兩批。軟件設置64角度安全上限。
 - 表格會顯示量化後角度、A1–A8 counts、相鄰相位差和最近柵瓣。
@@ -46,11 +48,24 @@ GUI 使用目前 PATH 中的 Python 3；硬件採集固定調用 `C:\Python27\py
 - 若角度超過16，UI會再次顯示批次數和文件數；確認後腳本自動完成批次切換，無需人工操作TX GUI。
 - 採集命令列會獨立彈出並保留，GUI則監控新的`capture_manifest.json`。
 
-UI和腳本不會修改：高壓電源、5-level電壓、Pattern Profile波形、PRF、發射週期數、AFE增益。
+UI和腳本不會修改實體高壓電源、5-level供電、板載CPLD的PRF或AFE增益。若啟用已知pattern寫入，軟件會針對1、1.5、2、2.5、4 MHz白名單更新TX7316 Pattern Profile／發射週期數並回讀驗證；不匹配即拒絕採集。
+
+### 2.1 逐PRF自動掃描
+
+新`逐PRF掃描 Auto Scan`頁把每一個1 kHz SYNC事件映射為明確的TX Profile、beam angle與HSDC sample offset：
+
+- 11角/2°可規劃為1個profile bank和1個BIN，約11 ms完成一輪；
+- 21角/1°會自動拆成16+5兩個bank和兩個BIN；
+- UI自動把Samples/channel向上取整為4096的整數倍，並估算每個BIN大小；
+- 可保存帶硬件需求和Fail-Closed狀態的JSON方案，並做不接觸硬件的時序Dry Run；
+- 原廠CPLD沒有逐SYNC profile sequencer，因此真正快速掃描在讀回已驗證自定義固件前保持禁用；切到`已驗證：每角度獨立BIN`仍可直接運行現有採集。
+
+接線、TX/AFE/HSDC配置、sequencer狀態機與驗收步驟見 [RAPID_PRF_AUTO_SCAN_GUIDE.md](RAPID_PRF_AUTO_SCAN_GUIDE.md)。
 
 ### 3. 處理與3D
 
 - 選擇`status=complete`的`capture_*`文件夾。
+- 「離線角度取樣」可選擇使用全部已採集角度，或由1°資料選取`-10,-8,…,+10`的2°子集；後者不需要重新採集。
 - 點`運算並繪製2D / 3D`。
 - 分析輸出保存在`capture_*\analysis`：
 
@@ -85,7 +100,7 @@ python compare_capture_runs.py <old_capture_folder> <new_capture_folder>
 採集腳本的可變參數Dry Run：
 
 ```powershell
-C:\Python27\python.exe ..\automation\tx7316_hsdc_batch_capture.py --dry-run --angles=-10,-8,-6,-4,-2,0,2,4,6,8,10 --tx-elements 8 --pitch-mm 1.59 --element-width-mm 1.0 --center-frequency-mhz 1.0 --sound-speed-m-s 1540 --delay-quantum-ns 5
+C:\Python27\python.exe ..\automation\tx7316_hsdc_batch_capture.py --dry-run --angles=-10,-8,-6,-4,-2,0,2,4,6,8,10 --tx-elements 8 --pitch-mm 1.59 --element-width-mm 1.0 --center-frequency-mhz 2.5 --sound-speed-m-s 1540 --delay-quantum-ns 5
 ```
 
 ## 安全邊界
