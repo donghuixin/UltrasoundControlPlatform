@@ -27,6 +27,7 @@
 12. [通道QA、成像失敗原因與三級排查](docs/10_CHANNEL_QA_AND_IMAGING_DIAGNOSIS.md)
 13. [JESD 通道複製故障報告與三組閉環證據](docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md)
 14. [可直接交給 Opus 的 JESD 去幀求助包](docs/12_OPUS_HELP_REQUEST_JESD_DEFRAMING.md)
+15. [2026-07-26 項目交接與恢復開發順序](docs/13_PROJECT_HANDOFF_2026-07-26.md)
 
 ## 目前硬件基線
 
