@@ -28,6 +28,7 @@
 13. [JESD 通道複製故障報告與三組閉環證據](docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md)
 14. [可直接交給 Opus 的 JESD 去幀求助包](docs/12_OPUS_HELP_REQUEST_JESD_DEFRAMING.md)
 15. [2026-07-26 項目交接與恢復開發順序](docs/13_PROJECT_HANDOFF_2026-07-26.md)
+16. [JESD PDF/RTL 證據、適用邊界與下一步 Gate](docs/13_JESD_DOCUMENT_EVIDENCE_AND_DECISION_GATES.md)
 
 ## 目前硬件基線
 
@@ -87,6 +88,7 @@ configs/hsdc/                  HSDC Pro ADC/JESD profile
 configs/tx7316/                TX7316 1 MHz preset
 diagnostics/                   去識別化 QA 摘要（不含 raw BIN）
 docs/                          硬件和操作文檔
+skills/                        可重用的 Codex JESD 排障技能與安全診斷工具
 reconstruct_ultrasound.py      HSDC BIN 離線分析與成像
 auto_runs/                     本機採集輸出；不會提交到 Git
 ```

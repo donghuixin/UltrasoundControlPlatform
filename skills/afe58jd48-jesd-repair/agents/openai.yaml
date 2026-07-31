@@ -1,0 +1,4 @@
+interface:
+  display_name: "AFE58JD48 JESD Repair"
+  short_description: "Diagnose AFE58JD48 and TSW14J50 channel duplication"
+  default_prompt: "Use $afe58jd48-jesd-repair to localize deterministic JESD channel duplication and define the next falsifiable test."
