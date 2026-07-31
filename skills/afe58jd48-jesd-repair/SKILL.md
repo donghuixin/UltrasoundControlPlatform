@@ -1,6 +1,6 @@
 ---
 name: afe58jd48-jesd-repair
-description: Diagnose deterministic receive-channel duplication, missing converters, bad HSDC column mapping, and low channel independence on AFE58JD48EVM plus TSW14J50/HSDC Pro systems. Use when channels are bit-exact duplicates, a 16-column capture contains fewer unique converter codes, Subclass or HSDC profiles are under test, receive-DAS collapses, or a TI support packet must be prepared.
+description: Diagnose and operate TX7316EVM, AFE58JD48EVM, and TSW14J50/HSDC Pro ultrasound chains. Use for deterministic channel duplication, missing converters, HSDC mapping, trigger and Doppler planning, TX/echo frequency confusion, weak or striped B-mode images, calibration gates, or a TI support packet.
 ---
 
 # AFE58JD48 JESD Repair
@@ -15,6 +15,10 @@ Use digital evidence to localize a channel-mapping failure before changing the p
 4. Read [references/decision-gates.md](references/decision-gates.md) before proposing the next experiment.
 5. Read [references/source-map.md](references/source-map.md) before using local PDFs or the JESD reference RTL. It records which sources apply to TSW14J50 and which are only architectural examples.
 6. Read [references/platform-traps.md](references/platform-traps.md) when the failure is a GUI, USB, firmware-load, trigger, save, or reconstruction exception rather than a repeatable converter mapping.
+7. Read [references/system-architecture-and-modes.md](references/system-architecture-and-modes.md) before changing clocks, triggers, TX patterns, or capture topology.
+8. Read [references/calibration-and-imaging.md](references/calibration-and-imaging.md) for weak echoes, grating lobes, frequency selection, and B-mode calibration.
+9. Read [references/doppler-and-trigger.md](references/doppler-and-trigger.md) before attempting slow-time ensembles or multi-heart-cycle recording.
+10. Read [references/open-source-evidence.md](references/open-source-evidence.md) before reusing USTB, UltraSpy, ListenToJESD, echomods, murgen, or ADCoctoSPI01 concepts.
 
 ## Transport gate
 

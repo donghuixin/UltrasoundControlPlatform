@@ -229,6 +229,27 @@ KNOWN_PATTERN_PROFILES = {
     },
 }
 
+# Diagnostic A-rail-only waveform.  TX7316 transition duration is PER+2
+# pattern clocks and PER is only five bits, so each 67-clock half-cycle is
+# represented by three consecutive entries at the same electrical level.
+# The adjacent entries do not create extra output edges: the resulting output
+# is a plain PHV_A <-> MHV_A bipolar square wave.  Reg25 REPEAT_COUNT=1 emits
+# two acoustic cycles; TAIL_COUNT=9 is retained from the qualified profiles.
+BIPOLAR_A_PATTERN_PROFILES = {
+    1.5: {
+        "name": "bipolar_A_1p5MHz_2cycle_diagnostic",
+        "register25": 0x00000242,
+        "registers": [
+            0xA1AAA2A2, 0x0007A9A1,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000,
+        ],
+        "nominal_base_pattern_hz": 200000000.0 / 134.0,
+        "electrical_levels": ["PHV_A", "MHV_A"],
+        "acoustic_cycles": 2,
+    },
+}
+
 
 class AutomationError(RuntimeError):
     pass
@@ -992,6 +1013,35 @@ class TX7316Controller(object):
             self.write_verified("GLOBAL", 0x18, new_value)
         return new_value
 
+    def force_internal_bf_off(self, attempts=3):
+        """Fail closed, while tolerating one transient FTDI readback error.
+
+        Enabling transmit is never retried.  Disabling is safe to retry because
+        the first write may already have succeeded even when its readback
+        raised an FTDI I/O exception.
+        """
+        failures = []
+        for attempt in range(1, int(attempts) + 1):
+            try:
+                value = self.set_internal_bf(False)
+                if failures:
+                    log("TX_BF_MODE OFF verified on retry %d/%d." % (
+                        attempt, attempts
+                    ))
+                return value
+            except Exception as exc:
+                failures.append(repr(exc))
+                if attempt < attempts:
+                    log("WARNING: TX_BF_MODE OFF attempt %d/%d failed; retrying readback..." % (
+                        attempt, attempts
+                    ))
+                    time.sleep(0.15)
+        raise AutomationError(
+            "Unable to verify TX_BF_MODE OFF after %d attempts: %s" % (
+                attempts, " | ".join(failures)
+            )
+        )
+
     def select_g1_profile(self, profile_number):
         if not (0 <= profile_number <= 15):
             raise AutomationError("Profile number must be 0..15")
@@ -1264,6 +1314,12 @@ def make_parser():
         help="transmit/receive centre frequency used for wavelength and phase reports",
     )
     parser.add_argument(
+        "--waveform-mode",
+        choices=["tapered-5level", "bipolar-a"],
+        default="tapered-5level",
+        help="TX Profile 0 waveform library; bipolar-a is the 1.493 MHz PHV_A/MHV_A diagnostic",
+    )
+    parser.add_argument(
         "--sound-speed-m-s", type=float, default=SOUND_SPEED_M_S,
         help="assumed propagation speed for delay-law calculation",
     )
@@ -1323,9 +1379,16 @@ def make_parser():
     return parser
 
 
-def known_pattern_key_for_frequency(frequency_mhz):
+def pattern_library_for_mode(waveform_mode):
+    if waveform_mode == "bipolar-a":
+        return BIPOLAR_A_PATTERN_PROFILES
+    return KNOWN_PATTERN_PROFILES
+
+
+def known_pattern_key_for_frequency(frequency_mhz, waveform_mode="tapered-5level"):
     """Return the exact whitelisted pattern key for a requested MHz value."""
-    for candidate in sorted(KNOWN_PATTERN_PROFILES):
+    library = pattern_library_for_mode(waveform_mode)
+    for candidate in sorted(library):
         if abs(float(frequency_mhz) - candidate) < 1e-9:
             return candidate
     return None
@@ -1355,10 +1418,17 @@ def validate_arguments(args):
         raise AutomationError("--element-width-mm must be positive and no larger than pitch")
     if args.center_frequency_mhz <= 0:
         raise AutomationError("--center-frequency-mhz must be positive")
-    known_pattern_key = known_pattern_key_for_frequency(args.center_frequency_mhz)
+    known_pattern_key = known_pattern_key_for_frequency(
+        args.center_frequency_mhz, args.waveform_mode
+    )
     if args.program_known_pattern and known_pattern_key is None:
+        if args.waveform_mode == "bipolar-a":
+            raise AutomationError(
+                "--waveform-mode bipolar-a currently supports exactly 1.5 MHz"
+            )
         raise AutomationError(
-            "--program-known-pattern only supports exactly 1, 1.5, 2, 2.5 or 4 MHz"
+            "--program-known-pattern with tapered-5level supports exactly "
+            "1, 1.5, 2, 2.5 or 4 MHz"
         )
     if not (1000.0 <= args.sound_speed_m_s <= 2000.0):
         raise AutomationError("--sound-speed-m-s must be between 1000 and 2000")
@@ -1412,7 +1482,10 @@ def main(argv=None):
     # This value is needed later, after the run directory and manifest have
     # been created.  Keep it in main's scope; validate_arguments intentionally
     # performs validation only and does not export local state.
-    known_pattern_key = known_pattern_key_for_frequency(args.center_frequency_mhz)
+    known_pattern_key = known_pattern_key_for_frequency(
+        args.center_frequency_mhz, args.waveform_mode
+    )
+    pattern_library = pattern_library_for_mode(args.waveform_mode)
     apply_runtime_array_configuration(args)
 
     report = array_report(args.angles, args.reverse_angle_sign)
@@ -1503,7 +1576,7 @@ def main(argv=None):
             "internal_bf_enabled": bool(original_reg24 & 0x1),
         }
         known_profile = (
-            KNOWN_PATTERN_PROFILES.get(known_pattern_key)
+            pattern_library.get(known_pattern_key)
             if known_pattern_key is not None else None
         )
         if args.program_known_pattern:
@@ -1687,7 +1760,7 @@ def main(argv=None):
                     # Pass_Capture_Event 等價於在 HSDC Pro 中點擊 Capture。
                     hsdc.capture(args.trigger)
                     # DDR 捕獲完成後立刻停止內部發射；保存文件時無需繼續發射。
-                    tx.set_internal_bf(False)
+                    tx.force_internal_bf_off()
                     log("HSDC capture complete; TX_BF_MODE disabled before file save.")
                     # ADC_Save_Raw_Data_As_Binary_File 等價於保存 raw binary；path 已包含
                     # 角度、Profile 和 repeat 編號，因此不需要事後手工重命名。

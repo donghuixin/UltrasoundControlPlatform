@@ -311,6 +311,9 @@ class CollectorApp(tk.Tk):
         self.repeats_var = tk.StringVar(value=str(get("repeats", 1)))
         self.settle_var = tk.StringVar(value=str(get("settle_seconds", 0.25)))
         self.trigger_var = tk.StringVar(value=str(get("trigger", "normal")))
+        self.waveform_mode_var = tk.StringVar(
+            value=str(get("waveform_mode", "bipolar-a"))
+        )
         self.output_root_var = tk.StringVar(value=str(get("output_root", DEFAULT_AUTO_RUNS)))
         self.capture_folder_var = tk.StringVar(value="")
         self.capture_status_var = tk.StringVar(value="尚未啟動採集")
@@ -587,6 +590,30 @@ class CollectorApp(tk.Tk):
         trigger_holder.pack(side="left", fill="x", expand=True)
         tk.Label(trigger_holder, text="Trigger", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
         ttk.Combobox(trigger_holder, textvariable=self.trigger_var, values=["normal", "software", "hardware"], state="readonly", width=12).pack(fill="x")
+
+        waveform_row = tk.Frame(settings_card, bg=COLORS["surface"])
+        waveform_row.pack(fill="x", padx=18, pady=(13, 0))
+        tk.Label(
+            waveform_row,
+            text="TX waveform",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", pady=(0, 5))
+        ttk.Combobox(
+            waveform_row,
+            textvariable=self.waveform_mode_var,
+            values=["bipolar-a", "tapered-5level"],
+            state="readonly",
+            width=28,
+        ).pack(anchor="w")
+        tk.Label(
+            waveform_row,
+            text="bipolar-a: 1.493 MHz, 2 cycles, PHV_A/MHV_A only (diagnostic)",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 8),
+        ).pack(anchor="w", pady=(4, 0))
 
         output_row = tk.Frame(settings_card, bg=COLORS["surface"])
         output_row.pack(fill="x", padx=18, pady=(13, 16))
@@ -1695,6 +1722,8 @@ class CollectorApp(tk.Tk):
             f"{config.element_width_mm:.6g}",
             "--center-frequency-mhz",
             f"{config.center_frequency_mhz:.6g}",
+            "--waveform-mode",
+            self.waveform_mode_var.get(),
             "--sound-speed-m-s",
             f"{config.sound_speed_m_s:.6g}",
             "--delay-quantum-ns",
@@ -2280,6 +2309,7 @@ class CollectorApp(tk.Tk):
             "repeats": self.repeats_var.get(),
             "settle_seconds": self.settle_var.get(),
             "trigger": self.trigger_var.get(),
+            "waveform_mode": self.waveform_mode_var.get(),
             "output_root": self.output_root_var.get(),
             "auto_scan_mode": self.auto_scan_mode_var.get(),
             "auto_scan_prf_hz": self.auto_scan_prf_var.get(),

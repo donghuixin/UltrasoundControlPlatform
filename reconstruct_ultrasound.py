@@ -154,21 +154,65 @@ def detect_events_validated(
     signal = data[:, channel_indices].astype(np.float32) - baseline[channel_indices]
     score = np.max(np.abs(signal), axis=1)
     smoothed = moving_average(score, 32)
-    threshold = max(1200.0, float(np.percentile(smoothed, 99.5)) * 0.55)
+    # The direct-coupling marker amplitude depends strongly on the programmed
+    # TX waveform.  The older tapered five-level pattern produced >1200-code
+    # markers, while the simple PHV_A/MHV_A bipolar pattern can be perfectly
+    # periodic with peaks below 600 codes.  A fixed 1200-code floor therefore
+    # rejected every real emission in otherwise valid captures.
+    noise_center = float(np.median(smoothed))
+    noise_mad = float(np.median(np.abs(smoothed - noise_center)))
+    noise_sigma = max(1.0, 1.4826 * noise_mad)
+    threshold = max(
+        20.0,
+        noise_center + 8.0 * noise_sigma,
+        float(np.percentile(smoothed, 99.5)) * 0.35,
+    )
     candidates = np.where(
         (smoothed[1:-1] > smoothed[:-2])
         & (smoothed[1:-1] >= smoothed[2:])
         & (smoothed[1:-1] > threshold)
     )[0] + 1
     ordered = candidates[np.argsort(smoothed[candidates])[::-1]]
-    centers: list[int] = []
-    for candidate in ordered:
-        position = int(candidate)
-        if all(abs(position - existing) > 60_000 for existing in centers):
-            centers.append(position)
-        if len(centers) >= 12:
-            break
-    centers.sort()
+
+    # Select candidates as one PRF-periodic train instead of taking the twelve
+    # strongest isolated peaks.  Low-amplitude captures contain occasional
+    # noise peaks between emissions; including those in a straight-line fit can
+    # make a valid 1 kHz train look aperiodic.  Each strong candidate is tried as
+    # the phase seed of the expected PRF grid, and the grid with the greatest
+    # accumulated marker strength is retained.
+    nominal_period = FS_HZ / float(expected_prf_hz)
+    search_radius = int(min(4096, max(512, round(nominal_period * 0.025))))
+    complete_start = 1000
+    complete_stop = data.shape[0] - WINDOW_SAMPLES - 500
+    best_centers: list[int] = []
+    best_grid_score = -1.0
+    for candidate in ordered[: min(64, len(ordered))]:
+        seed = int(candidate)
+        first_step = int(math.ceil((complete_start - seed) / nominal_period))
+        last_step = int(math.floor((complete_stop - seed) / nominal_period))
+        grid_centers: list[int] = []
+        grid_score = 0.0
+        for step in range(first_step, last_step + 1):
+            predicted = int(round(seed + step * nominal_period))
+            lo = max(complete_start, predicted - search_radius)
+            hi = min(complete_stop + 1, predicted + search_radius + 1)
+            if hi <= lo:
+                continue
+            refined = lo + int(np.argmax(smoothed[lo:hi]))
+            strength = float(smoothed[refined])
+            if strength < threshold:
+                continue
+            if not grid_centers or refined != grid_centers[-1]:
+                grid_centers.append(refined)
+                grid_score += strength
+        if len(grid_centers) >= 2 and (
+            grid_score, len(grid_centers)
+        ) > (
+            best_grid_score, len(best_centers)
+        ):
+            best_centers = grid_centers
+            best_grid_score = grid_score
+    centers = best_centers
 
     coarse: list[int] = []
     for center in centers:
@@ -183,6 +227,10 @@ def detect_events_validated(
         "amplitude_candidate_count": int(len(candidates)),
         "coarse_event_count": len(coarse),
         "amplitude_threshold_codes": round(float(threshold), 3),
+        "noise_center_codes": round(noise_center, 3),
+        "noise_sigma_codes": round(noise_sigma, 3),
+        "prf_grid_search_radius_samples": search_radius,
+        "prf_grid_score": round(float(best_grid_score), 3),
         "expected_prf_hz": float(expected_prf_hz),
         "validation": "amplitude candidates establish a fitted PRF grid; waveform-template correlation is diagnostic",
     }
