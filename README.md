@@ -5,7 +5,7 @@
 - 8 陣元（可配置 2–8）TX7316 Delay Profile 計算與多角度自動採集；
 - HKUST Bio-data collector 白色桌面 UI；
 - HSDC raw BIN 離線檢查、軟對齊、帶通、DAS、角度複合與 2D/3D 圖；
-- 1 MHz B-mode 成像、PW Doppler 可行性計算及短塊採集入口；
+- 1 MHz B-mode 成像、PW Doppler 短塊採集、連續 I/Q 分析與流量仿體預設；
 - 5-level / Appendix C 3-level 接線、觸發、冷啟動、關機與排障文檔；
 - 本機已驗證的 HSDC 16 通道 INI 和 TX7316 1 MHz preset。
 
@@ -31,6 +31,9 @@
 16. [JESD PDF/RTL 證據、適用邊界與下一步 Gate](docs/13_JESD_DOCUMENT_EVIDENCE_AND_DECISION_GATES.md)
 17. [2026-07-31 採集、低幅事件修復與成像交接](docs/14_HANDOFF_2026-07-31_CAPTURE_AND_RECONSTRUCTION.md)
 18. [開源工程、架構與可遷移知識庫](docs/15_OPEN_SOURCE_ARCHITECTURE_AND_KNOWLEDGE_BASE.md)
+19. [PW Doppler 多心動周期採集設計](docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md)
+20. [頸動脈樣流量仿體預設與配置審計](docs/17_CAROTID_FLOW_PHANTOM_PRESETS_2026-08-01.md)
+21. [2026-08-01 PW Doppler 與配置審計總交接](docs/18_HANDOFF_2026-08-01_PW_DOPPLER_AND_CONFIG_AUDIT.md)
 
 ## 目前硬件基線
 

@@ -41,21 +41,25 @@ Pattern P0 registers 0x60..0x64:
 
 ## Collector配置
 
-`HKUST_BioData_Collector/collector_config.example.json`是可提交基線；UI把本機選項保存為被Git忽略的`collector_config.json`。推薦1 MHz B-mode起點：
+`HKUST_BioData_Collector/collector_config.example.json`是可提交基線；UI把本機選項保存為被Git忽略的`collector_config.json`。目前Collector基線使用1.5 MHz已知pattern、8個物理通道和HSDC槽5–12：
 
 ```json
 {
   "elements": 8,
   "pitch_mm": "1.59",
   "element_width_mm": "1.0",
-  "center_frequency_mhz": "1.0",
+  "rx_hsdc_slots": "5,6,7,8,9,10,11,12",
+  "center_frequency_mhz": "1.5",
   "min_angle": "-10.0",
   "max_angle": "10.0",
   "angle_step": "1",
   "samples": "262144",
-  "trigger": "normal"
+  "trigger": "normal",
+  "doppler_preset_key": "carotid_phantom_raw_low_flow"
 }
 ```
+
+可在倉庫根目錄執行`python HKUST_BioData_Collector/config_audit.py`，檢查repository HSDC snapshot、Collector JSON和所有頸動脈流量仿體預設的語法與數學一致性。這是只讀審計，不代替GUI/AFE寄存器readback或16/16唯一碼transport Gate。
 
 ## 自動腳本的責任邊界
 

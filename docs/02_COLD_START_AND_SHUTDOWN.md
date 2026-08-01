@@ -89,7 +89,7 @@ E:\Program Files (x86)\Texas Instruments\High Speed Data Converter Pro\14J50 Det
 1. 關閉所有舊採集命令窗，確認沒有另一個腳本正在控制HSDC。
 2. 雙擊`HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd`。
 3. 頂部應顯示`Admin: yes / TX GUI: open / HSDC: open`。這些只表示進程存在；HSDC Automation連線是否健康仍以正式採集日誌為準。
-4. `陣列與延時`頁填：8陣元、pitch 1.59 mm、寬1.0 mm、聲速1540 m/s、Delay quantum 5 ns、HSDC槽`9,10,11,12,13,14,15,16`。
+4. `陣列與延時`頁填：8陣元、pitch 1.59 mm、寬1.0 mm、聲速1540 m/s、Delay quantum 5 ns、HSDC槽`5,6,7,8,9,10,11,12`（2026-07-31線束映射）。
 5. 選中心頻率和角度，例如`-10…+10° / 2°`共11角。
 6. `自動採集`先點Dry run；必須列出角度、延時counts、profile批次、預估檔案數/容量並以exit code 0結束。
 

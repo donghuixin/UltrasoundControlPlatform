@@ -9,6 +9,14 @@
 
 Treat these as versioned baselines, not proof of the live hardware state. After loading, read back the registers/JESD status and verify the acoustic spectrum from a real capture.
 
+Run the repository-level read-only syntax/consistency audit from the repository root:
+
+```powershell
+python HKUST_BioData_Collector\config_audit.py
+```
+
+An audit PASS means the snapshots are structurally consistent with their documented purpose. It does not promote an experimental HSDC/AFE pair to a validated transport profile.
+
 As of 2026-07-25, matched S1/K8, matched S2/K8 and the TI-installed original
 S1 profile all produced the same deterministic duplicate mapping
 `[3,5] [4,6] [9,15] [10,16]`. The TI-original profile's private

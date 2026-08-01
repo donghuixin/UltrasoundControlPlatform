@@ -29,7 +29,7 @@ GUI 使用目前 PATH 中的 Python 3；硬件採集固定調用 `C:\Python27\py
 - TX7316 G1只支持 `A1–A8`，所以陣元數限制為 `2–8`。
 - 少於8個陣元時，只有 `A1…AN`參與延時計算，其餘Delay字段填零；未使用TX輸出仍需物理斷開或在TX GUI關閉。
 - 「A1…AN 對應的 HSDC 接收槽」必須按實際接線填寫。本平台目前確認為
-  `9,10,11,12,13,14,15,16`；採集腳本會把這個映射寫入manifest，離線重建不再假設使用槽1–8。
+  `5,6,7,8,9,10,11,12`；採集腳本會把這個映射寫入manifest，離線重建不再假設使用槽1–8。
 - 重複槽處理不再寫死。重建頁可選：自動保留映射中先出現者、保留全部配置槽作診斷，或在示波器／逐SMA排查後手動指定DAS槽。
   所有策略只影響離線重建，不會改寫或刪除原始BIN。在完成真實SMA到HSDC槽映射前，圖像只能視為診斷結果。
 - UI 可選 `1°`（精細）或 `2°`（快速）角度步進。`-10°…+10° / 1°` 共21個角度。
@@ -109,6 +109,8 @@ C:\Python27\python.exe ..\automation\tx7316_hsdc_batch_capture.py --dry-run --an
 
 ## PW Doppler
 
-UI現在包含`PW多普勒 Doppler`頁面，可計算PRF的無模糊深度、速度Nyquist、單塊脈衝數、原始RF數據量和距離門I/Q數據量，並可啟動固定角度HSDC短塊採集。
+UI現在包含`PW多普勒 Doppler`頁面，可計算PRF的無模糊深度、速度Nyquist、TSW總DDR分攤、單塊脈衝數、原始RF數據量、距離門I/Q數據量和預估心動周期數。現有模式會配置固定TX波束角度、採集單一連續HSDC raw-RF塊，完成後自動輸出距離門I/Q、wall filter、速度譜、速度CSV和周期可信度摘要。
 
-重要限制：TX7316EVM板載CPLD的1 kHz PRF不能由GUI或本程式直接改變；多個HSDC BIN之間存在保存缺口，不能拼成連續心動週期。完整接線、AFE/TSW配置和連續I/Q方案見 [PW_DOPPLER_OPERATION_GUIDE.md](PW_DOPPLER_OPERATION_GUIDE.md)。
+頁面提供五個頸動脈樣流量**仿體**預設。現有1 kHz/70 ms低速短塊可在完成Pre-flight後一鍵採集並分析；2.5/5/7.5 kHz多周期方案會一鍵載入並檢查硬件Gate，不能繞過尚未驗證的共同PRF與連續I/Q後端。配置審計可執行`python config_audit.py`。
+
+重要限制：TX7316EVM板載CPLD的1 kHz PRF不能由GUI或本程式直接改變；現有M=16、120 MSPS原始RF的理論最長單塊只有約0.140秒，多個HSDC BIN之間又存在保存缺口，不能拼成連續心動週期。最佳10秒心動方案需要5 kHz共同PRF和FPGA距離門I/Q後端；在固件通過前UI會保持硬件Gate。完整推導見 [PW_DOPPLER_OPERATION_GUIDE.md](PW_DOPPLER_OPERATION_GUIDE.md)、[多心動周期設計](../docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md)、[流量仿體預設](../docs/17_CAROTID_FLOW_PHANTOM_PRESETS_2026-08-01.md)和[最新總交接](../docs/18_HANDOFF_2026-08-01_PW_DOPPLER_AND_CONFIG_AUDIT.md)。

@@ -30,7 +30,21 @@ from delay_model import (
     calculate_profiles,
     format_angles_cli,
 )
-from doppler_model import DopplerConfig, DopplerResult, calculate_doppler, result_as_dict
+from doppler_model import (
+    AFE_DEMOD_IQ_MODE,
+    FPGA_RANGE_GATE_IQ_MODE,
+    RAW_RF_DDR_MODE,
+    DopplerConfig,
+    DopplerResult,
+    calculate_doppler,
+    result_as_dict,
+)
+from doppler_presets import (
+    CAROTID_PHANTOM_PRESETS,
+    CAROTID_PHANTOM_PRESETS_BY_KEY,
+    CAROTID_PHANTOM_PRESETS_BY_LABEL,
+    DopplerPreset,
+)
 from rapid_scan_model import (
     RapidScanConfig,
     build_rapid_scan_plan,
@@ -47,6 +61,7 @@ DEFAULT_AUTO_RUNS = CAPTURE_ROOT / "auto_runs"
 PYTHON27 = Path(r"C:\Python27\python.exe")
 CONFIG_PATH = APP_DIR / "collector_config.json"
 DOPPLER_GUIDE = APP_DIR / "PW_DOPPLER_OPERATION_GUIDE.md"
+DOPPLER_ANALYSIS_SCRIPT = APP_DIR / "pw_doppler_analysis.py"
 RX_CHANNELS_IN_CAPTURE_FILE = 16
 BYTES_PER_ADC_SAMPLE = 2
 ADC_SAMPLE_RATE_HZ = 120_000_000.0
@@ -64,6 +79,11 @@ DUPLICATE_POLICY_OPTIONS = {
 ANGLE_SUBSET_OPTIONS = {
     "使用全部已採集角度": None,
     "按2°子集重建（1°資料隔一個取一個）": 2.0,
+}
+DOPPLER_CAPTURE_MODE_OPTIONS = {
+    "現有可執行：HSDC原始RF單塊": RAW_RF_DDR_MODE,
+    "最佳心動周期：FPGA距離門I/Q（待驗證固件）": FPGA_RANGE_GATE_IQ_MODE,
+    "研究路徑：AFE Demod I/Q（待JESD解包）": AFE_DEMOD_IQ_MODE,
 }
 
 
@@ -297,9 +317,9 @@ class CollectorApp(tk.Tk):
         self.pitch_var = tk.StringVar(value=str(get("pitch_mm", 1.59)))
         self.width_var = tk.StringVar(value=str(get("element_width_mm", 1.0)))
         self.rx_channels_var = tk.StringVar(
-            value=str(get("rx_hsdc_slots", "9,10,11,12,13,14,15,16"))
+            value=str(get("rx_hsdc_slots", "5,6,7,8,9,10,11,12"))
         )
-        self.frequency_var = tk.StringVar(value=str(get("center_frequency_mhz", 2.5)))
+        self.frequency_var = tk.StringVar(value=str(get("center_frequency_mhz", 1.5)))
         self.sound_speed_var = tk.StringVar(value=str(get("sound_speed_m_s", 1540.0)))
         self.quantum_var = tk.StringVar(value=str(get("delay_quantum_ns", 5.0)))
         self.min_angle_var = tk.StringVar(value=str(get("min_angle", -10.0)))
@@ -312,7 +332,7 @@ class CollectorApp(tk.Tk):
         self.settle_var = tk.StringVar(value=str(get("settle_seconds", 0.25)))
         self.trigger_var = tk.StringVar(value=str(get("trigger", "normal")))
         self.waveform_mode_var = tk.StringVar(
-            value=str(get("waveform_mode", "bipolar-a"))
+            value=str(get("waveform_mode", "tapered-5level"))
         )
         self.output_root_var = tk.StringVar(value=str(get("output_root", DEFAULT_AUTO_RUNS)))
         self.capture_folder_var = tk.StringVar(value="")
@@ -331,7 +351,7 @@ class CollectorApp(tk.Tk):
             )
         )
         self.manual_das_rx_var = tk.StringVar(
-            value=str(get("manual_das_rx_slots", "9,10,11,12,13,14"))
+            value=str(get("manual_das_rx_slots", "5,6,7,8,9,10,11,12"))
         )
         self.reconstruction_angle_subset_var = tk.StringVar(
             value=str(get("reconstruction_angle_subset_label", "使用全部已採集角度"))
@@ -364,13 +384,29 @@ class CollectorApp(tk.Tk):
         self.doppler_prf_source_var = tk.StringVar(
             value=str(get("doppler_prf_source", "Onboard CPLD - fixed 1 kHz"))
         )
+        saved_doppler_mode = str(
+            get("doppler_capture_mode_label", "現有可執行：HSDC原始RF單塊")
+        )
+        if saved_doppler_mode not in DOPPLER_CAPTURE_MODE_OPTIONS:
+            saved_doppler_mode = "現有可執行：HSDC原始RF單塊"
+        self.doppler_capture_mode_var = tk.StringVar(value=saved_doppler_mode)
+        saved_preset_key = str(get("doppler_preset_key", "carotid_phantom_raw_low_flow"))
+        if saved_preset_key not in CAROTID_PHANTOM_PRESETS_BY_KEY:
+            saved_preset_key = "carotid_phantom_raw_low_flow"
+        self.doppler_preset_var = tk.StringVar(
+            value=CAROTID_PHANTOM_PRESETS_BY_KEY[saved_preset_key].label
+        )
+        self.doppler_preset_note_var = tk.StringVar(value="")
         self.doppler_prf_var = tk.StringVar(value=str(get("doppler_prf_hz", 1000.0)))
         self.doppler_steering_var = tk.StringVar(value=str(get("doppler_steering_angle_deg", 0.0)))
         self.doppler_flow_angle_var = tk.StringVar(value=str(get("doppler_flow_angle_deg", 60.0)))
         self.doppler_depth_var = tk.StringVar(value=str(get("doppler_target_depth_mm", 25.0)))
+        self.doppler_gate_length_var = tk.StringVar(value=str(get("doppler_gate_length_mm", 2.0)))
         self.doppler_velocity_var = tk.StringVar(value=str(get("doppler_expected_velocity_m_s", 1.0)))
         self.doppler_duration_var = tk.StringVar(value=str(get("doppler_duration_s", 6.0)))
         self.doppler_ensemble_var = tk.StringVar(value=str(get("doppler_ensemble_pulses", 256)))
+        self.doppler_wall_filter_var = tk.StringVar(value=str(get("doppler_wall_filter_hz", 50.0)))
+        self.doppler_heart_rate_var = tk.StringVar(value=str(get("doppler_expected_heart_rate_bpm", 75.0)))
         self.doppler_samples_var = tk.StringVar(value=str(get("doppler_block_samples", 4194304)))
         self.doppler_repeats_var = tk.StringVar(value=str(get("doppler_repeats", 1)))
         self.doppler_trigger_var = tk.StringVar(value=str(get("doppler_trigger", "normal")))
@@ -382,6 +418,9 @@ class CollectorApp(tk.Tk):
         self.doppler_warning_var = tk.StringVar(value="")
         self.doppler_status_var = tk.StringVar(value="尚未啟動Doppler短塊採集")
         self.doppler_command_var = tk.StringVar(value="修改參數後，單角度命令會顯示在這裡。")
+        self.doppler_analysis_status_var = tk.StringVar(value="尚未分析PW Doppler資料。")
+        self.doppler_result_var = tk.StringVar(value="速度譜會保存到 capture/analysis/pw_doppler。")
+        self.doppler_result_run: Path | None = None
 
     def _build_shell(self) -> None:
         self.background_label = tk.Label(self, bg=COLORS["background"], borderwidth=0)
@@ -818,11 +857,20 @@ class CollectorApp(tk.Tk):
         self._page_heading(
             page,
             "PW Doppler長時量測",
-            "把PRF、深度、速度Nyquist與存儲量放在同一頁；目前可執行固定角度短塊採集，連續心動週期需要I/Q抽取或FPGA距離門。",
+            "固定波束角度後錄製一段連續慢時間資料；界面會區分可執行短塊與真正能辨識心動周期的I/Q路徑。",
         )
 
-        body = tk.Frame(page, bg=COLORS["background"])
-        body.pack(fill="both", expand=True)
+        scroll_host = tk.Frame(page, bg=COLORS["background"])
+        scroll_host.pack(fill="both", expand=True)
+        canvas = tk.Canvas(scroll_host, bg=COLORS["background"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        body = tk.Frame(canvas, bg=COLORS["background"])
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_window, width=event.width))
         body.grid_columnconfigure(0, weight=3)
         body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(2, weight=1)
@@ -832,7 +880,57 @@ class CollectorApp(tk.Tk):
         header = tk.Frame(settings_card, bg=COLORS["surface"])
         header.pack(fill="x", padx=18, pady=(15, 10))
         ttk.Label(header, text="Acquisition & flow model", style="CardTitle.TLabel").pack(side="left")
-        ttk.Button(header, text="載入 1 MHz / 5 kHz 建議值", style="Secondary.TButton", command=self._load_doppler_preset).pack(side="right")
+
+        preset_row = tk.Frame(settings_card, bg=COLORS["surface"])
+        preset_row.pack(fill="x", padx=18, pady=(0, 6))
+        preset_text = tk.Frame(preset_row, bg=COLORS["surface"])
+        preset_text.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            preset_text,
+            text="Carotid flow-phantom preset",
+            bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", pady=(0, 5))
+        preset_combo = ttk.Combobox(
+            preset_text,
+            textvariable=self.doppler_preset_var,
+            values=[preset.label for preset in CAROTID_PHANTOM_PRESETS],
+            state="readonly",
+        )
+        preset_combo.pack(fill="x")
+        preset_combo.bind("<<ComboboxSelected>>", lambda _event: self._doppler_preset_changed())
+        preset_actions = tk.Frame(preset_row, bg=COLORS["surface"])
+        preset_actions.pack(side="right", padx=(12, 0), pady=(20, 0))
+        ttk.Button(
+            preset_actions,
+            text="套用方案",
+            style="Secondary.TButton",
+            command=lambda: self._apply_selected_doppler_preset(False),
+        ).pack(side="left", padx=(0, 8))
+        self.doppler_preset_execute_button = ttk.Button(
+            preset_actions,
+            text="一鍵採集並分析",
+            style="Primary.TButton",
+            command=lambda: self._apply_selected_doppler_preset(True),
+        )
+        self.doppler_preset_execute_button.pack(side="left")
+        tk.Label(
+            settings_card,
+            textvariable=self.doppler_preset_note_var,
+            bg=COLORS["surface"], fg=COLORS["muted"], justify="left", anchor="w",
+            wraplength=1050, font=("Segoe UI", 9),
+        ).pack(fill="x", padx=18, pady=(0, 10))
+
+        mode_row = tk.Frame(settings_card, bg=COLORS["surface"])
+        mode_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(mode_row, text="Acquisition path", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        mode_combo = ttk.Combobox(
+            mode_row,
+            textvariable=self.doppler_capture_mode_var,
+            values=list(DOPPLER_CAPTURE_MODE_OPTIONS),
+            state="readonly",
+        )
+        mode_combo.pack(fill="x")
+        mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._doppler_mode_changed())
 
         source_row = tk.Frame(settings_card, bg=COLORS["surface"])
         source_row.pack(fill="x", padx=18, pady=(0, 10))
@@ -872,14 +970,20 @@ class CollectorApp(tk.Tk):
         doppler_entries.append(self._labeled_entry(row2, "Expected v (m/s)", self.doppler_velocity_var))
         doppler_entries.append(self._labeled_entry(row2, "Desired time (s)", self.doppler_duration_var))
         doppler_entries.append(self._labeled_entry(row2, "FFT ensemble", self.doppler_ensemble_var))
-        doppler_entries.append(self._labeled_entry(row2, "Block samples/ch", self.doppler_samples_var))
+        doppler_entries.append(self._labeled_entry(row2, "Expected HR (BPM)", self.doppler_heart_rate_var))
 
         row3 = tk.Frame(settings_card, bg=COLORS["surface"])
-        row3.pack(fill="x", padx=18, pady=(0, 15))
+        row3.pack(fill="x", padx=18, pady=(0, 9))
+        doppler_entries.append(self._labeled_entry(row3, "Gate length (mm)", self.doppler_gate_length_var))
+        doppler_entries.append(self._labeled_entry(row3, "Wall filter (Hz)", self.doppler_wall_filter_var))
+        doppler_entries.append(self._labeled_entry(row3, "Block samples/ch", self.doppler_samples_var))
         doppler_entries.append(self._labeled_entry(row3, "Block repeats", self.doppler_repeats_var))
+
+        row4 = tk.Frame(settings_card, bg=COLORS["surface"])
+        row4.pack(fill="x", padx=18, pady=(0, 15))
         tk.Label(
-            row3,
-            text="ADC/JESD stays at 120 MSPS. PRF is a physical trigger rate and is not programmed by this UI.",
+            row4,
+            text="原始RF模式保持120 MSPS；PRF是物理同步率。心動周期模式只會在經驗證的I/Q固件與解包後解鎖。",
             bg=COLORS["primary_soft"],
             fg=COLORS["primary_hover"],
             justify="left",
@@ -940,16 +1044,16 @@ class CollectorApp(tk.Tk):
         current.grid(row=0, column=0, sticky="nsew", padx=(18, 12), pady=14)
         future = tk.Frame(architecture_card, bg=COLORS["surface"])
         future.grid(row=0, column=1, sticky="nsew", padx=(12, 18), pady=14)
-        ttk.Label(current, text="NOW · validated short-block path", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(current, text="NOW · 可執行短塊", style="CardTitle.TLabel").pack(anchor="w")
         tk.Label(
             current,
             text="TX固定角度 → AFE 120 MSPS原始RF → TSW DDR → 單個BIN。每個BIN內連續；BIN之間因保存與重新Capture存在長缺口。",
             bg=COLORS["surface"], fg=COLORS["muted"], justify="left", anchor="w", wraplength=530, font=("Segoe UI", 9),
         ).pack(fill="x", pady=(5, 0))
-        ttk.Label(future, text="NEXT · gap-free cardiac path", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(future, text="BEST · 連續心動周期", style="CardTitle.TLabel").pack(anchor="w")
         tk.Label(
             future,
-            text="共同PRF時鐘 → AFE數字下變頻/抽取或FPGA距離門 → 每脈衝一個複數I/Q樣點 → 5–10秒慢時間流。HSDC capture-to-file streaming仍保留為實驗接口。",
+            text="5 kHz共同PRF → 固定角度 → FPGA在選定深度做距離門/IQ → 每個脈衝保留一個複數樣點 → 單次連續10秒。這是最多心動周期且資料量最小的推薦路徑。",
             bg=COLORS["surface"], fg=COLORS["muted"], justify="left", anchor="w", wraplength=530, font=("Segoe UI", 9),
         ).pack(fill="x", pady=(5, 0))
 
@@ -965,7 +1069,7 @@ class CollectorApp(tk.Tk):
         checks.grid(row=1, column=0, sticky="ew", padx=18)
         ttk.Checkbutton(checks, text="TX/AFE/HSDC已初始化，CW關閉，只測仿體", variable=self.doppler_phantom_confirmed_var).pack(anchor="w")
         ttk.Checkbutton(checks, text="PRF同步路徑已實測，沒有把J7 pin 2當輸入", variable=self.doppler_sync_confirmed_var).pack(anchor="w")
-        ttk.Checkbutton(checks, text="理解多個BIN不構成連續心動資料", variable=self.doppler_gap_ack_var).pack(anchor="w")
+        ttk.Checkbutton(checks, text="理解多個BIN不構成連續心動資料，只有單一連續記錄可判定周期", variable=self.doppler_gap_ack_var).pack(anchor="w")
         tk.Label(launch_card, textvariable=self.doppler_status_var, bg=COLORS["surface"], fg=COLORS["text"], anchor="w", font=("Segoe UI Semibold", 10)).grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 0))
         tk.Label(
             launch_card,
@@ -974,12 +1078,22 @@ class CollectorApp(tk.Tk):
             wraplength=1000, font=("Cascadia Mono", 9), highlightbackground=COLORS["border"], highlightthickness=1,
         ).grid(row=3, column=0, sticky="nsew", padx=18, pady=8)
         actions = tk.Frame(launch_card, bg=COLORS["surface"])
-        actions.grid(row=4, column=0, sticky="e", padx=18, pady=(0, 14))
+        actions.grid(row=4, column=0, sticky="e", padx=18, pady=(0, 8))
         ttk.Button(actions, text="打開完整操作文檔", style="Secondary.TButton", command=self._open_doppler_guide).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="導出Session Plan", style="Secondary.TButton", command=self.export_doppler_plan).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Doppler dry run", style="Secondary.TButton", command=lambda: self.launch_doppler_capture(True)).pack(side="left", padx=(0, 8))
-        self.doppler_capture_button = ttk.Button(actions, text="開始固定角度短塊採集", style="Danger.TButton", command=lambda: self.launch_doppler_capture(False))
+        self.doppler_capture_button = ttk.Button(actions, text="開始固定角度採集並分析", style="Danger.TButton", command=lambda: self.launch_doppler_capture(False))
         self.doppler_capture_button.pack(side="left")
+
+        analysis_row = tk.Frame(launch_card, bg=COLORS["surface_soft"], highlightbackground=COLORS["border"], highlightthickness=1)
+        analysis_row.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 14))
+        analysis_text = tk.Frame(analysis_row, bg=COLORS["surface_soft"])
+        analysis_text.pack(side="left", fill="x", expand=True, padx=12, pady=9)
+        tk.Label(analysis_text, textvariable=self.doppler_analysis_status_var, bg=COLORS["surface_soft"], fg=COLORS["text"], anchor="w", font=("Segoe UI Semibold", 9)).pack(fill="x")
+        tk.Label(analysis_text, textvariable=self.doppler_result_var, bg=COLORS["surface_soft"], fg=COLORS["muted"], anchor="w", justify="left", wraplength=720, font=("Segoe UI", 9)).pack(fill="x", pady=(2, 0))
+        ttk.Button(analysis_row, text="分析最新PW記錄", style="Secondary.TButton", command=self.launch_doppler_analysis).pack(side="left", padx=(8, 4), pady=9)
+        ttk.Button(analysis_row, text="打開速度譜", style="Secondary.TButton", command=self._open_doppler_result).pack(side="left", padx=(4, 12), pady=9)
+        self._doppler_preset_changed()
 
     def _build_processing_page(self) -> None:
         page = self._new_page("processing")
@@ -1154,7 +1268,7 @@ class CollectorApp(tk.Tk):
         try:
             slots = [int(token.strip()) for token in text.split(",") if token.strip()]
         except ValueError as exc:
-            raise ValueError("HSDC接收槽必須是逗號分隔的整數，例如 9,10,11,12,13,14,15,16。") from exc
+            raise ValueError("HSDC接收槽必須是逗號分隔的整數，例如 5,6,7,8,9,10,11,12。") from exc
         expected = int(self.elements_var.get())
         if len(slots) != expected:
             raise ValueError(f"HSDC接收槽數必須等於物理T/R陣元數 {expected}；目前為 {slots}。")
@@ -1485,21 +1599,96 @@ class CollectorApp(tk.Tk):
             self.doppler_trigger_var.set("hardware")
         self.recalculate_doppler(show_errors=False)
 
-    def _load_doppler_preset(self) -> None:
-        self.frequency_var.set("1.0")
-        self.doppler_prf_source_var.set("External synchronized source - manual wiring")
-        self.doppler_prf_var.set("5000")
-        self.doppler_steering_var.set("0")
-        self.doppler_flow_angle_var.set("60")
-        self.doppler_depth_var.set("25")
-        self.doppler_velocity_var.set("1.0")
-        self.doppler_duration_var.set("6")
-        self.doppler_ensemble_var.set("256")
-        self.doppler_samples_var.set("4194304")
-        self.doppler_repeats_var.set("1")
-        self.doppler_trigger_var.set("hardware")
-        self.recalculate_delays(show_errors=False)
+    def _doppler_mode_changed(self) -> None:
+        mode = DOPPLER_CAPTURE_MODE_OPTIONS[self.doppler_capture_mode_var.get()]
+        if mode == RAW_RF_DDR_MODE:
+            self.doppler_status_var.set("原始RF單塊可執行；完成後會自動生成短時速度譜。")
+        elif mode == FPGA_RANGE_GATE_IQ_MODE:
+            self.doppler_status_var.set("推薦心動周期路徑；等待已驗證的TSW FPGA距離門/IQ後端。")
+        else:
+            self.doppler_status_var.set("AFE Demod研究路徑；等待匹配的JESD解包profile與通道Gate。")
         self.recalculate_doppler(show_errors=False)
+
+    @staticmethod
+    def _doppler_mode_label(capture_mode: str) -> str:
+        for label, value in DOPPLER_CAPTURE_MODE_OPTIONS.items():
+            if value == capture_mode:
+                return label
+        raise ValueError(f"找不到Doppler capture mode：{capture_mode}")
+
+    def _selected_doppler_preset(self) -> DopplerPreset:
+        try:
+            return CAROTID_PHANTOM_PRESETS_BY_LABEL[self.doppler_preset_var.get()]
+        except KeyError as exc:
+            raise ValueError("請重新選擇一個有效的頸動脈流量仿體方案。") from exc
+
+    def _doppler_preset_changed(self) -> None:
+        try:
+            preset = self._selected_doppler_preset()
+        except ValueError:
+            self.doppler_preset_note_var.set("預設無效，請重新選擇。")
+            return
+        backend = "現有後端可執行" if preset.current_backend_executable else "等待連續I/Q後端"
+        self.doppler_preset_note_var.set(
+            f"{backend} · {preset.purpose} 僅限已知流速仿體，不是人體或診斷配置。"
+        )
+        self.doppler_preset_execute_button.configure(
+            text="一鍵採集並分析" if preset.current_backend_executable else "一鍵載入並檢查Gate"
+        )
+
+    def _apply_doppler_preset(self, preset: DopplerPreset, execute: bool = False) -> None:
+        # Keep the physical aperture and current degraded RX mapping explicit.
+        # Safety acknowledgements are never checked automatically.
+        self.elements_var.set("8")
+        self.pitch_var.set("1.59")
+        self.width_var.set("1.0")
+        self.rx_channels_var.set("5,6,7,8,9,10,11,12")
+        self.sound_speed_var.set("1540.0")
+        self.quantum_var.set("5.0")
+        self.waveform_mode_var.set("tapered-5level")
+        self.frequency_var.set(f"{preset.center_frequency_mhz:g}")
+        self.doppler_capture_mode_var.set(self._doppler_mode_label(preset.capture_mode))
+        self.doppler_prf_source_var.set(preset.prf_source)
+        self.doppler_prf_var.set(f"{preset.prf_hz:g}")
+        self.doppler_steering_var.set(f"{preset.steering_angle_deg:g}")
+        self.doppler_flow_angle_var.set(f"{preset.flow_angle_deg:g}")
+        self.doppler_depth_var.set(f"{preset.target_depth_mm:g}")
+        self.doppler_gate_length_var.set(f"{preset.gate_length_mm:g}")
+        self.doppler_velocity_var.set(f"{preset.expected_velocity_m_s:g}")
+        self.doppler_duration_var.set(f"{preset.desired_duration_s:g}")
+        self.doppler_ensemble_var.set(str(preset.ensemble_pulses))
+        self.doppler_wall_filter_var.set(f"{preset.wall_filter_hz:g}")
+        self.doppler_heart_rate_var.set(f"{preset.expected_heart_rate_bpm:g}")
+        self.doppler_samples_var.set(str(preset.block_samples_per_channel))
+        self.doppler_repeats_var.set(str(preset.repeats))
+        self.doppler_trigger_var.set(preset.trigger)
+        self.recalculate_delays(show_errors=False)
+        calculated = self.recalculate_doppler(show_errors=True)
+        if calculated is None:
+            return
+        self.doppler_status_var.set(f"已套用：{preset.label}")
+        if execute:
+            self.after_idle(lambda: self.launch_doppler_capture(False))
+
+    def _apply_selected_doppler_preset(self, execute: bool = False) -> None:
+        try:
+            preset = self._selected_doppler_preset()
+        except ValueError as exc:
+            messagebox.showerror("PW Doppler預設錯誤", str(exc), parent=self)
+            return
+        self._apply_doppler_preset(preset, execute=execute)
+
+    def _load_doppler_preset(self) -> None:
+        preset = CAROTID_PHANTOM_PRESETS_BY_KEY["carotid_phantom_routine_10s"]
+        self.doppler_preset_var.set(preset.label)
+        self._doppler_preset_changed()
+        self._apply_doppler_preset(preset)
+
+    def _load_doppler_raw_preset(self) -> None:
+        preset = CAROTID_PHANTOM_PRESETS_BY_KEY["carotid_phantom_raw_low_flow"]
+        self.doppler_preset_var.set(preset.label)
+        self._doppler_preset_changed()
+        self._apply_doppler_preset(preset)
 
     def _current_doppler_config(self) -> DopplerConfig:
         return DopplerConfig(
@@ -1511,11 +1700,16 @@ class CollectorApp(tk.Tk):
             expected_velocity_m_s=float(self.doppler_velocity_var.get()),
             desired_duration_s=float(self.doppler_duration_var.get()),
             ensemble_pulses=int(self.doppler_ensemble_var.get()),
+            gate_length_mm=float(self.doppler_gate_length_var.get()),
+            wall_filter_hz=float(self.doppler_wall_filter_var.get()),
+            expected_heart_rate_bpm=float(self.doppler_heart_rate_var.get()),
             adc_rate_msps=120.0,
             block_samples_per_channel=int(self.doppler_samples_var.get()),
             rx_channels=RX_CHANNELS_IN_CAPTURE_FILE,
+            iq_channels=int(self.elements_var.get()),
             bytes_per_adc_sample=BYTES_PER_ADC_SAMPLE,
             sound_speed_m_s=float(self.sound_speed_var.get()),
+            capture_mode=DOPPLER_CAPTURE_MODE_OPTIONS[self.doppler_capture_mode_var.get()],
         )
 
     @staticmethod
@@ -1526,6 +1720,11 @@ class CollectorApp(tk.Tk):
             "One raw HSDC block": "單個HSDC原始塊的脈衝數少於所選FFT ensemble。",
             "The desired cardiac duration": "期望心動時長超過單個原始塊；多次Capture之間存在缺口。",
             "Gap-free full-duration raw RF": "全時長原始RF超過1 GiB；應改用AFE I/Q抽取或FPGA距離門。",
+            "Requested raw block exceeds": "所填Samples/channel超過TSW14J50按16列分攤後的理論DDR上限。",
+            "Even the theoretical maximum": "即使使用理論最大原始RF單塊，也短於一個預期心動周期。",
+            "Requested duration covers fewer": "所填時長少於三個預期心動周期，不能可靠判定周期性。",
+            "FPGA range-gated I/Q": "FPGA距離門I/Q是推薦心動路徑，但尚缺已驗證的TSW固件與採集後端。",
+            "AFE demodulated I/Q": "AFE Demod I/Q尚缺匹配且通過通道Gate的JESD解包profile。",
         }
         for prefix, localized in translations.items():
             if warning.startswith(prefix):
@@ -1554,14 +1753,16 @@ class CollectorApp(tk.Tk):
             f"Unambiguous z   {result.max_unambiguous_depth_mm:8.1f} mm\n"
             f"Velocity Nyq.   {result.nyquist_velocity_m_s:8.3f} m/s\n"
             f"Expected fD     {result.expected_doppler_shift_hz:8.1f} Hz\n"
-            f"Minimum PRF     {result.minimum_prf_for_expected_velocity_hz:8.0f} Hz"
+            f"Minimum PRF     {result.minimum_prf_for_expected_velocity_hz:8.0f} Hz\n"
+            f"Requested cycles{result.requested_heart_cycles:8.2f}"
         )
         self.doppler_storage_var.set(
             f"One raw block    {result.block_duration_ms:7.2f} ms / {result.pulses_per_raw_block:.1f} pulses\n"
             f"One BIN          {result.raw_block_gib:7.3f} GiB\n"
             f"{config.desired_duration_s:g}s raw RF      {result.full_duration_raw_gib:7.2f} GiB\n"
             f"Range-gated I/Q  {result.range_gated_iq_mib:7.2f} MiB\n"
-            f"FFT window       {result.ensemble_duration_ms:7.2f} ms / {result.velocity_bin_m_s:.4f} m/s bin"
+            f"FFT window       {result.ensemble_duration_ms:7.2f} ms / {result.velocity_bin_m_s:.4f} m/s bin\n"
+            f"TSW raw maximum  {result.board_max_raw_duration_s:7.3f} s / {result.board_max_raw_heart_cycles:.2f} cycles"
         )
         warnings = [self._localize_doppler_warning(item) for item in result.warnings]
         if self.doppler_prf_source_var.get().startswith("Onboard CPLD"):
@@ -1570,21 +1771,28 @@ class CollectorApp(tk.Tk):
             warnings.insert(0, "外部PRF需要隔離板載CPLD驅動並同步TX、AFE與TSW；J7 pin 2只是觀測輸出。")
         self.doppler_warning_var.set("\n".join(f"• {item}" for item in warnings))
 
-        try:
-            arguments = self._capture_arguments(
-                array_config,
-                [config.steering_angle_deg],
-                dry_run=False,
-                samples=config.block_samples_per_channel,
-                repeats=repeats,
-                settle=0.25,
-                trigger=self.doppler_trigger_var.get(),
-            )
+        if config.capture_mode == RAW_RF_DDR_MODE:
+            try:
+                arguments = self._capture_arguments(
+                    array_config,
+                    [config.steering_angle_deg],
+                    dry_run=False,
+                    samples=config.block_samples_per_channel,
+                    repeats=repeats,
+                    settle=0.25,
+                    trigger=self.doppler_trigger_var.get(),
+                    expected_prf_hz=config.prf_hz,
+                    expected_prfs_per_bin=max(1, int(math.floor(result.pulses_per_raw_block))),
+                )
+                self.doppler_command_var.set(
+                    subprocess.list2cmdline([str(PYTHON27), str(AUTOMATION_SCRIPT), *arguments])
+                )
+            except ValueError:
+                pass
+        else:
             self.doppler_command_var.set(
-                subprocess.list2cmdline([str(PYTHON27), str(AUTOMATION_SCRIPT), *arguments])
+                "HARDWARE GATE · 此模式不會調用現有raw-RF腳本；先導出Session Plan並完成固件、同步和已知流速驗收。"
             )
-        except ValueError:
-            pass
         return config, result
 
     def _doppler_plan(self) -> dict:
@@ -1594,9 +1802,39 @@ class CollectorApp(tk.Tk):
         config, result = calculated
         plan = result_as_dict(config, result)
         plan["prf_source"] = self.doppler_prf_source_var.get()
+        try:
+            selected_preset = self._selected_doppler_preset()
+            plan["selected_preset_key"] = selected_preset.key
+            plan["selected_preset_label"] = selected_preset.label
+            plan["preset_is_template_only"] = True
+        except ValueError:
+            plan["selected_preset_key"] = None
         plan["hsdc_trigger"] = self.doppler_trigger_var.get()
         plan["block_repeats"] = int(self.doppler_repeats_var.get())
         plan["prf_programmed_by_ui"] = False
+        plan["tx_angle_programmed_by_ui"] = config.capture_mode == RAW_RF_DDR_MODE
+        plan["capture_backend_ready"] = result.current_mode_hardware_ready
+        plan["separate_capture_files_may_be_concatenated"] = False
+        plan["cardiac_claim_requires_single_continuous_record"] = True
+        plan["array"] = {
+            "active_tx_elements": int(self.elements_var.get()),
+            "active_rx_hsdc_slots_1_based": self._current_rx_slots(),
+            "pitch_mm": float(self.pitch_var.get()),
+            "element_width_mm": float(self.width_var.get()),
+        }
+        plan["calibration"] = {
+            "range_zero_calibrated": False,
+            "velocity_direction_calibrated": False,
+            "flow_angle_source": "measure from B-mode or known phantom geometry; TX steering alone is insufficient",
+        }
+        if config.capture_mode != RAW_RF_DDR_MODE:
+            plan["required_backend_contract"] = {
+                "filename": "pw_doppler_input_iq.npz",
+                "iq_shape": "(continuous_pulses, active_iq_channels)",
+                "iq_dtype": "complex64 or complex int16 converted losslessly to complex64",
+                "required_fields": ["iq", "prf_hz"],
+                "continuity": "monotonic pulse_index/timestamp with no missing or repeated pulses",
+            }
         plan["operation_guide"] = str(DOPPLER_GUIDE)
         return plan
 
@@ -1622,11 +1860,150 @@ class CollectorApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("無法打開操作文檔", str(exc), parent=self)
 
+    def _latest_doppler_run(self) -> Path | None:
+        if self.doppler_result_run is not None and self.doppler_result_run.is_dir():
+            return self.doppler_result_run
+        root = Path(self.output_root_var.get()).expanduser()
+        if not root.exists():
+            return None
+        candidates: list[Path] = []
+        for plan_path in root.rglob("doppler_session_plan.json"):
+            path = plan_path.parent
+            manifest = read_json(path / "capture_manifest.json")
+            if manifest.get("status") == "complete":
+                candidates.append(path)
+        candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        return candidates[0] if candidates else None
+
+    def launch_doppler_analysis(
+        self,
+        run: Path | None = None,
+        force: bool = True,
+        automatic: bool = False,
+    ) -> None:
+        run = self._latest_doppler_run() if run is None else run.resolve()
+        if run is None:
+            if not automatic:
+                messagebox.showinfo(
+                    "沒有PW Doppler記錄",
+                    "尚未找到帶doppler_session_plan.json的完整capture。",
+                    parent=self,
+                )
+            return
+        if not DOPPLER_ANALYSIS_SCRIPT.is_file():
+            messagebox.showerror("缺少分析腳本", str(DOPPLER_ANALYSIS_SCRIPT), parent=self)
+            return
+        if self.processing_active:
+            if not automatic:
+                messagebox.showwarning("分析正在進行", "請等待目前的離線分析完成。", parent=self)
+            return
+        self.processing_active = True
+        self.doppler_result_run = run
+        self.doppler_analysis_status_var.set(f"正在分析 {run.name} 的單一連續記錄…")
+        command = [sys.executable, str(DOPPLER_ANALYSIS_SCRIPT), str(run)]
+        if force:
+            command.append("--force")
+
+        def worker() -> None:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(APP_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=20 * 60,
+                    check=False,
+                )
+                error: str | None = None
+                if completed.returncode != 0:
+                    error = (completed.stderr or completed.stdout or "unknown analysis error").strip()
+            except (OSError, subprocess.SubprocessError) as exc:
+                error = str(exc)
+            self.after(0, lambda: self._finish_doppler_analysis(run, error, automatic))
+
+        threading.Thread(target=worker, name="pw-doppler-analysis", daemon=True).start()
+
+    def _finish_doppler_analysis(self, run: Path, error: str | None, automatic: bool) -> None:
+        self.processing_active = False
+        if error is not None:
+            self.doppler_analysis_status_var.set("PW Doppler分析失敗；原始BIN未被修改。")
+            self.doppler_result_var.set(error[-900:])
+            if not automatic:
+                messagebox.showerror("PW Doppler分析失敗", error[-1600:], parent=self)
+            return
+        self._load_doppler_analysis_summary(run)
+        if not automatic:
+            messagebox.showinfo(
+                "PW Doppler分析完成",
+                str(run / "analysis" / "pw_doppler" / "pw_doppler_spectrogram.png"),
+                parent=self,
+            )
+
+    def _load_doppler_analysis_summary(self, run: Path) -> None:
+        summary_path = run / "analysis" / "pw_doppler" / "pw_doppler_summary.json"
+        summary = read_json(summary_path)
+        result = summary.get("result", {})
+        if summary.get("status") != "complete":
+            self.doppler_analysis_status_var.set("未找到完整的PW Doppler分析摘要。")
+            return
+        self.doppler_result_run = run
+        visible = bool(result.get("cardiac_cycle_visible", False))
+        periodicity = result.get("cardiac_periodicity", {})
+        cardiac_text = (
+            f"周期通過 · {float(periodicity.get('heart_rate_bpm', 0.0)):.1f} BPM"
+            if visible
+            else f"周期未通過 · {periodicity.get('reason', '證據不足')}"
+        )
+        self.doppler_analysis_status_var.set(f"{run.name} · {cardiac_text}")
+        self.doppler_result_var.set(
+            f"連續 {float(result.get('record_duration_s', 0.0)):.3f} s · "
+            f"預估 {float(result.get('expected_heart_cycles', 0.0)):.2f} 周期 · "
+            f"|v|max {float(result.get('peak_velocity_abs_max_m_s', 0.0)):.3f} m/s · "
+            "距離零點、速度量值與正負方向仍需仿體校準"
+        )
+
+    def _open_doppler_result(self) -> None:
+        run = self._latest_doppler_run()
+        if run is None:
+            messagebox.showinfo("沒有速度譜", "請先完成採集與PW Doppler分析。", parent=self)
+            return
+        target = run / "analysis" / "pw_doppler" / "pw_doppler_spectrogram.png"
+        if not target.is_file():
+            messagebox.showinfo("沒有速度譜", "請先點擊「分析最新PW記錄」。", parent=self)
+            return
+        try:
+            os.startfile(target)  # type: ignore[attr-defined]
+        except OSError as exc:
+            messagebox.showerror("無法打開速度譜", str(exc), parent=self)
+
     def launch_doppler_capture(self, dry_run: bool) -> None:
         calculated = self.recalculate_doppler(show_errors=True)
         if calculated is None:
             return
-        doppler_config, _result = calculated
+        doppler_config, doppler_result = calculated
+        if doppler_config.capture_mode != RAW_RF_DDR_MODE:
+            try:
+                plan = self._doppler_plan()
+            except ValueError as exc:
+                messagebox.showerror("PW Doppler參數錯誤", str(exc), parent=self)
+                return
+            if dry_run:
+                self.doppler_status_var.set(
+                    "心動周期方案計算通過；尚未解鎖硬件後端，不會連接或寫入設備。"
+                )
+                self.doppler_command_var.set(json.dumps(plan, ensure_ascii=False, indent=2))
+                return
+            messagebox.showwarning(
+                "心動周期硬件Gate未通過",
+                "最佳方案已完成參數與容量規劃，但現有TSW14J50 raw-RF固件不能錄製數秒連續資料。\n\n"
+                "必須先完成：\n"
+                "• 5 kHz共同PRF與TX/AFE/TSW同步驗證\n"
+                "• TSW FPGA距離門/IQ固件或匹配的AFE Demod JESD解包\n"
+                "• 單調pulse index與已知流速方向校準\n\n"
+                "界面不會把有缺口的多個BIN偽裝成心動波形。",
+                parent=self,
+            )
+            return
         try:
             array_config = self._current_array_config()
             repeats = int(self.doppler_repeats_var.get())
@@ -1638,6 +2015,8 @@ class CollectorApp(tk.Tk):
                 repeats=repeats,
                 settle=0.25,
                 trigger=self.doppler_trigger_var.get(),
+                expected_prf_hz=doppler_config.prf_hz,
+                expected_prfs_per_bin=max(1, int(math.floor(doppler_result.pulses_per_raw_block))),
             )
             plan = self._doppler_plan()
         except (ValueError, tk.TclError) as exc:
@@ -1661,9 +2040,11 @@ class CollectorApp(tk.Tk):
                 messagebox.showwarning("尚未完成Doppler Pre-flight", "請勾選三項Doppler採集確認。", parent=self)
                 return
             proceed = messagebox.askyesno(
-                "啟動固定角度PW Doppler短塊採集",
-                f"PRF={doppler_config.prf_hz:g} Hz只是已驗證硬件條件的記錄，程式本身不會修改CPLD PRF。\n\n"
-                f"本次保存 {repeats} 個短塊；每個BIN內連續，但BIN之間有長缺口，不能拼成心動波形。繼續嗎？",
+                "啟動固定角度PW Doppler原始RF採集",
+                f"腳本會先寫入並讀回TX7316固定角度Delay Profile，再錄製原始RF。\n\n"
+                f"PRF={doppler_config.prf_hz:g} Hz只是已驗證硬件條件的記錄，程式本身不會修改CPLD PRF。\n"
+                f"單塊連續時長約 {doppler_result.block_duration_ms:.2f} ms；本次保存 {repeats} 個BIN，但BIN之間有長缺口。\n"
+                "完成後只對單一BIN做速度譜，不會拼接成心動波形。繼續嗎？",
                 parent=self,
                 icon="warning",
             )
@@ -1968,6 +2349,8 @@ class CollectorApp(tk.Tk):
                     self.recalculate_auto_scan(show_errors=False)
                 self.refresh_capture_runs(select=run)
                 if status == "complete":
+                    if button is self.doppler_capture_button and watch.get("plan") is not None:
+                        self.launch_doppler_analysis(run, force=True, automatic=True)
                     messagebox.showinfo("採集完成", f"已保存 {captures} 個 BIN 文件：\n{run}", parent=self)
                 else:
                     messagebox.showerror("採集失敗", str(manifest.get("error", "請查看 run.log")), parent=self)
@@ -2316,13 +2699,22 @@ class CollectorApp(tk.Tk):
             "auto_scan_frames": self.auto_scan_frames_var.get(),
             "auto_scan_guard_prfs": self.auto_scan_guard_var.get(),
             "doppler_prf_source": self.doppler_prf_source_var.get(),
+            "doppler_preset_key": (
+                CAROTID_PHANTOM_PRESETS_BY_LABEL[self.doppler_preset_var.get()].key
+                if self.doppler_preset_var.get() in CAROTID_PHANTOM_PRESETS_BY_LABEL
+                else "carotid_phantom_raw_low_flow"
+            ),
+            "doppler_capture_mode_label": self.doppler_capture_mode_var.get(),
             "doppler_prf_hz": self.doppler_prf_var.get(),
             "doppler_steering_angle_deg": self.doppler_steering_var.get(),
             "doppler_flow_angle_deg": self.doppler_flow_angle_var.get(),
             "doppler_target_depth_mm": self.doppler_depth_var.get(),
+            "doppler_gate_length_mm": self.doppler_gate_length_var.get(),
             "doppler_expected_velocity_m_s": self.doppler_velocity_var.get(),
             "doppler_duration_s": self.doppler_duration_var.get(),
             "doppler_ensemble_pulses": self.doppler_ensemble_var.get(),
+            "doppler_wall_filter_hz": self.doppler_wall_filter_var.get(),
+            "doppler_expected_heart_rate_bpm": self.doppler_heart_rate_var.get(),
             "doppler_block_samples": self.doppler_samples_var.get(),
             "doppler_repeats": self.doppler_repeats_var.get(),
             "doppler_trigger": self.doppler_trigger_var.get(),

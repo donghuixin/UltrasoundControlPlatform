@@ -1369,7 +1369,7 @@ def make_parser():
     )
     parser.add_argument(
         "--program-known-pattern", action="store_true",
-        help="with TX idle, write and verify the whitelisted 1/2.5/4 MHz profile0 before capture",
+        help="with TX idle, write and verify the whitelisted 1/1.5/2/2.5/4 MHz profile0 before capture",
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(

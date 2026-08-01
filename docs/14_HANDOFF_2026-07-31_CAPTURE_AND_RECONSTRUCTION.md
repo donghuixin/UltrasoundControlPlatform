@@ -4,6 +4,8 @@
 適用平台：TX7316EVM + AFE58JD48EVM + TSW14J50/HSDC Pro  
 本日主要資料：`capture_20260731_171203`（raw BIN 不提交 Git）
 
+> 後續 PW Doppler、多周期 I/Q、流量仿體預設與配置審計狀態，請從 `docs/18_HANDOFF_2026-08-01_PW_DOPPLER_AND_CONFIG_AUDIT.md` 繼續閱讀。
+
 ## 1. 結論先行
 
 今天完成了兩件可驗收的工作：
