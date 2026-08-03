@@ -24,3 +24,10 @@ S1 profile all produced the same deterministic duplicate mapping
 cannot be interpreted by name alone. Do not promote or overwrite any installed
 profile until a candidate passes `automation/jesd_transport_qa.py` with 16/16
 distinct stable codes. See `docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md`.
+
+As of 2026-08-03, TI supplied a corrected AFE GUI CFG and updated
+TSW14J50RX firmware INI for this incident. The raw vendor files are kept only
+in the local private support archive, not in this public repository. See
+`docs/20_TI_AFE58JD48_CHANNEL_COPY_FIX_2026-08-03.md` and
+`diagnostics/ti_channel_copy_fix_packet_20260803.json` for checksums,
+installation notes and acceptance criteria.

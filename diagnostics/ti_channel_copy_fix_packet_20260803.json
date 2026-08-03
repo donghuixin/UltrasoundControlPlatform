@@ -1,0 +1,47 @@
+{
+  "packet_date": "2026-08-03",
+  "scope": "AFE58JD48EVM + TSW14J50/HSDC Pro 120-MSPS 8-lane Subclass-1 channel-copy investigation",
+  "support_source": "TI Ultrasound Rx AFE support",
+  "raw_files_committed": false,
+  "privacy_note": "Raw TI CFG/INI contents are intentionally excluded from the public repository. This file records only checksums and operational metadata.",
+  "local_private_archive_hint": "<TI_AFE58jd48 workspace>/TI_Support_Materials/2026-08-03_afe58jd48_s1_8l_channel_copy_fix/",
+  "ti_supplied_files": [
+    {
+      "name": "JESD 120MSPS_Subclass1_8L.CFG",
+      "bytes": 4236,
+      "sha256": "FC5A7093E21D816B7063D826759109C60BC1E31D294C7898B26808109ABAA344",
+      "intended_use": "Load through the AFE58JD48 GUI Open Configuration button."
+    },
+    {
+      "name": "AFE58JD48_Custom_PLL_MODE_40x_No Demod_SubClass1.ini",
+      "bytes": 1668,
+      "sha256": "78923A1787DC6794274398B5457DF1EE2F40852B0E9854DDC6AED41E9CDC8E67",
+      "intended_use": "Replace the installed firmware INI under the TSW14J50_TSW14J50RX_FIRMWARE directory after backing up the existing file."
+    }
+  ],
+  "installed_ini_backup_before_replace": {
+    "name": "AFE58JD48_Custom_PLL_MODE_40x_No_Demod_SubClass1.installed_2022-11-10.before_ti_update.ini",
+    "bytes": 1668,
+    "original_modified_time": "2022-11-10 19:18:16",
+    "sha256": "72C1F4B59E9A1E057A4B001D723B6C04DFAAB981DD6AED73F43A34CAEF332C7E"
+  },
+  "default_install_path_from_ti": "C:/Program Files (x86)/Texas Instruments/AFE58JD48 EVM/Config Files/AFE58JD48/AFE58JD48vA/Firmware INI Files/TSW14J50_TSW14J50RX_FIRMWARE/",
+  "local_install_path_observed": "E:/Program Files (x86)/Texas Instruments/AFE58JD48 EVM/Config Files/AFE58JD48/AFE58JD48vA/Firmware INI Files/TSW14J50_TSW14J50RX_FIRMWARE/",
+  "previous_failure_signature": {
+    "duplicate_hsdc_slots": [
+      [3, 5],
+      [4, 6],
+      [9, 15],
+      [10, 16]
+    ],
+    "missing_expected_converters": [3, 4, 15, 16],
+    "observed_slot_mapping": [1, 2, 5, 6, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 9, 10]
+  },
+  "acceptance_gate": {
+    "minimum_samples_per_column": 65536,
+    "requires_empty_duplicate_groups": true,
+    "requires_16_stable_distinct_codes": true,
+    "requires_each_expected_code_once": true,
+    "qa_command": "python automation/jesd_transport_qa.py \"C:/path/to/unique_code_capture.bin\""
+  }
+}
