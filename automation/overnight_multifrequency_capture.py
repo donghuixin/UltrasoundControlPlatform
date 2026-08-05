@@ -8,7 +8,8 @@ SETUP / SAFETY
 1. Gel/phantom only.  Do not use this unattended sequence on a person.
 2. TX7316 GUI, AFE58JD48 GUI and HSDC Pro must already be initialized,
    CONNECTED, and running at the same Windows administrator integrity level.
-3. HSDC Pro must use AFE58JD48_120M_8L_M16_FIXED at 120 MSPS.
+3. Normal HSDC capture must use TI's channel-mapping-fix profile
+   AFE58JD48_Custom_PLL_MODE_40x_No Demod_SubClass1 at 120 MSPS.
 4. CW and elastography modes must be off.  The finite B-mode pattern is written
    only while TX_BF_MODE is off and is read back bit-for-bit before capture.
 5. Keep the phantom/probe fixed and wet-coupled.  Make sure the HV supplies,

@@ -96,7 +96,7 @@ def config_from_capture(capture_dir: Path) -> tuple[AnalysisConfig, dict[str, An
 
     sample_rate_hz = float(_value(hsdc, "sample_rate_hz", 120_000_000.0))
     center_frequency_mhz = float(
-        _value(plan_config, "center_frequency_mhz", arguments.get("center_frequency_mhz", 1.5))
+        _value(plan_config, "center_frequency_mhz", arguments.get("center_frequency_mhz", 1.0))
     )
     prf_hz = float(
         _value(plan_config, "prf_hz", manifest.get("expected_prf_hz", 0.0))

@@ -339,7 +339,7 @@ def main() -> int:
     array = manifest.get("array") or {}
     configured_slots = args.rx_channels or manifest_args.get("rx_channels") or array.get("rx_hsdc_slots_1_based")
     if configured_slots is None:
-        configured_slots = list(range(9, 17))
+        configured_slots = list(range(1, 9))
     configured_slots = [int(value) for value in configured_slots]
     if len(configured_slots) != len(set(configured_slots)) or any(
         value < 1 or value > CHANNELS_IN_FILE for value in configured_slots
@@ -348,7 +348,7 @@ def main() -> int:
 
     center_mhz = args.center_frequency_mhz
     if center_mhz is None:
-        center_mhz = finite_float(manifest_args.get("center_frequency_mhz"), 1.5)
+        center_mhz = finite_float(manifest_args.get("center_frequency_mhz"), 1.0)
     center_hz = center_mhz * 1e6
     low_hz, high_hz = max(0.25e6, center_hz * 0.60), min(FS_HZ * 0.45, center_hz * 1.40)
     sound_speed = args.sound_speed_m_s or finite_float(manifest_args.get("sound_speed_m_s"), DEFAULT_SOUND_SPEED_M_S)

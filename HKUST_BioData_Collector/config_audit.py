@@ -15,7 +15,7 @@ from doppler_presets import CAROTID_PHANTOM_PRESETS, CAROTID_PHANTOM_PRESETS_BY_
 
 APP_DIR = Path(__file__).resolve().parent
 REPO_ROOT = APP_DIR.parent
-EXPECTED_RX_SLOTS = "5,6,7,8,9,10,11,12"
+EXPECTED_RX_SLOTS = "1,2,3,4,5,6,7,8"
 REGISTER_LINE = re.compile(r"^[A-Za-z0-9_-]+(?:\|0x[0-9A-Fa-f]+)?\s+0x[0-9A-Fa-f]+$")
 
 
@@ -81,6 +81,22 @@ def audit_hsdc_profiles() -> list[AuditFinding]:
                 AuditFinding(
                     "error", target,
                     f"Subclass={subclass!r} does not match filename expectation {expected_subclass}",
+                )
+            )
+        capture_trigger_sma = values.get("Is Capture Trigger SMA")
+        if "_TRIG" in path.stem:
+            if capture_trigger_sma != "1":
+                findings.append(
+                    AuditFinding(
+                        "error", target,
+                        "trigger profile must contain active 'Is Capture Trigger SMA = 1'",
+                    )
+                )
+        elif capture_trigger_sma is not None:
+            findings.append(
+                AuditFinding(
+                    "warning", target,
+                    "non-trigger profile unexpectedly enables the capture-trigger SMA",
                 )
             )
         findings.append(
@@ -169,8 +185,8 @@ def audit_collector_config(path: Path) -> list[AuditFinding]:
         )
     if int(payload.get("elements", 0)) != 8:
         findings.append(AuditFinding("error", target, "elements must be 8 for the current A1-A8 aperture"))
-    if float(payload.get("center_frequency_mhz", 0.0)) != 1.5:
-        findings.append(AuditFinding("warning", target, "current qualified collector baseline is 1.5 MHz"))
+    if float(payload.get("center_frequency_mhz", 0.0)) != 1.0:
+        findings.append(AuditFinding("warning", target, "current collector default is 1.0 MHz"))
     if str(payload.get("waveform_mode", "")) != "tapered-5level":
         findings.append(AuditFinding("error", target, "waveform_mode must be tapered-5level for the one-click PW baseline"))
     preset_key = str(payload.get("doppler_preset_key", ""))

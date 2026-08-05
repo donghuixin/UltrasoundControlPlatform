@@ -4,7 +4,7 @@
 適用對象：目前的8個有效TX/RX通道、1.59 mm中心間距、1 mm x 1 mm x 0.4 mm壓電陣元、TX7316 5-level EVM、AFE58JD48 EVM、TSW14J50和HSDC Pro。
 目前範圍：凝膠、流體仿體和台架驗證，不用於人體。
 
-> 2026-08-01更新：TSW14J50的256M個16-bit樣點是總容量，現有M=16、120 MSPS原始RF理論最長約0.140秒，不能覆蓋心動周期。最新容量推導、1.5 MHz/5 kHz/10秒推薦配置、FPGA距離門I/Q架構和上位機自動速度譜流程，以[`docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md`](../docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md)為準。本文中早期的1 MHz/5 kHz示例保留作歷史推導，不再視為本機最佳profile。
+> 2026-08-04更新：TSW14J50的256M個16-bit樣點是總容量，現有M=16、120 MSPS原始RF理論最長約0.140秒，不能覆蓋心動周期。Collector與PW預設目前統一為1.0 MHz/5-level tapered；最新容量推導、5 kHz/10秒推薦配置、FPGA距離門I/Q架構和上位機自動速度譜流程，以[`docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md`](../docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md)為準。
 
 ## 1. 先說結論
 
@@ -302,7 +302,7 @@ TI EVM手冊驗證的簡單入口是：
 1. 先選Acquisition path。`現有可執行`可直接錄raw RF；`最佳心動周期`和`AFE Demod`在後端通過前保持硬件Gate。
 2. 選PRF source，輸入PRF、TX steer、flow angle、gate depth/length、預期速度、HR、wall filter和期望時長。
 3. 查看無模糊深度、Nyquist速度、TSW原始RF理論上限和可覆蓋周期數。
-4. 點`現有硬件短塊`載入1.5 MHz/1 kHz/64-pulse短時方案，或點`最佳心動周期方案`載入1.5 MHz/5 kHz/10秒/128-pulse目標方案。
+4. 點`現有硬件短塊`載入1.0 MHz/1 kHz/64-pulse短時方案，或點`最佳心動周期方案`載入1.0 MHz/5 kHz/10秒/128-pulse目標方案。
 5. 點`導出Session Plan`保存JSON；其中明確記錄`prf_programmed_by_ui = false`和capture backend Gate。
 6. 點`Doppler dry run`只計算延時和命令，不動硬件。
 7. 現有raw RF模式完成三項Pre-flight後，點`開始固定角度採集並分析`；腳本會配置並讀回單一Delay Profile，再採集一個連續BIN。

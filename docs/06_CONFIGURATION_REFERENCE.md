@@ -41,7 +41,7 @@ Pattern P0 registers 0x60..0x64:
 
 ## Collector配置
 
-`HKUST_BioData_Collector/collector_config.example.json`是可提交基線；UI把本機選項保存為被Git忽略的`collector_config.json`。目前Collector基線使用1.5 MHz已知pattern、8個物理通道和HSDC槽5–12：
+`HKUST_BioData_Collector/collector_config.example.json`是可提交基線；UI把本機選項保存為被Git忽略的`collector_config.json`。目前Collector預設使用1.0 MHz已知5-level tapered pattern、8個物理通道和HSDC槽5–12：
 
 ```json
 {
@@ -49,7 +49,7 @@ Pattern P0 registers 0x60..0x64:
   "pitch_mm": "1.59",
   "element_width_mm": "1.0",
   "rx_hsdc_slots": "5,6,7,8,9,10,11,12",
-  "center_frequency_mhz": "1.5",
+  "center_frequency_mhz": "1.0",
   "min_angle": "-10.0",
   "max_angle": "10.0",
   "angle_step": "1",
@@ -65,7 +65,7 @@ Pattern P0 registers 0x60..0x64:
 
 腳本會做：Delay Profile計算/量化、分批寫profile、LOAD_PROF、逐角度TX_BF開關、HSDC capture/save、檔案大小與rail QA、manifest。
 
-腳本不會做：高壓電源、Pattern電平/週期、PRF、AFE增益、人體安全參數。`--center-frequency-mhz`只影響延時計算與報告，必須先在TX GUI載入相同頻率的Pattern。
+腳本不會做：外部高壓電源、PRF、AFE增益、人體安全參數。正式採集與`--program-tx-only`會把白名單頻率/cycles寫入Pattern Profile 0並逐字讀回；寫入期間及program-only完成後`TX_BF_MODE`保持OFF。`--center-frequency-mhz`同時控制白名單Pattern選擇、延時計算與報告，但電氣/聲學頻率仍須量測。
 
 ## 常用命令
 

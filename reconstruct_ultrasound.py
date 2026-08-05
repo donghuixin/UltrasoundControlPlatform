@@ -22,9 +22,9 @@ ROOT = Path(__file__).resolve().parent
 FS_HZ = 120_000_000.0
 C_M_S = 1540.0
 PITCH_M = 1.59e-3
-CENTER_FREQUENCY_HZ = 2.5e6
-LOW_HZ = 1.5e6
-HIGH_HZ = 3.5e6
+CENTER_FREQUENCY_HZ = 1.0e6
+LOW_HZ = 0.6e6
+HIGH_HZ = 1.4e6
 WINDOW_SAMPLES = 7500
 
 
@@ -46,6 +46,150 @@ def parse_rx_channels(text: str) -> list[int]:
 def moving_average(values: np.ndarray, length: int) -> np.ndarray:
     length = max(1, int(length))
     return np.convolve(values, np.ones(length, dtype=np.float64) / length, mode="same")
+
+
+def tukey_window(length: int, alpha: float = 0.5) -> np.ndarray:
+    """Return a symmetric Tukey window without requiring scipy.signal."""
+    length = int(length)
+    alpha = float(alpha)
+    if length < 1:
+        raise ValueError("Window length must be positive")
+    if length == 1 or alpha <= 0.0:
+        return np.ones(length, dtype=np.float64)
+    if alpha >= 1.0:
+        return np.hanning(length).astype(np.float64)
+    x = np.linspace(0.0, 1.0, length)
+    window = np.ones(length, dtype=np.float64)
+    leading = x < alpha / 2.0
+    trailing = x > 1.0 - alpha / 2.0
+    window[leading] = 0.5 * (
+        1.0 + np.cos(np.pi * (2.0 * x[leading] / alpha - 1.0))
+    )
+    window[trailing] = 0.5 * (
+        1.0 + np.cos(np.pi * (2.0 * x[trailing] / alpha - 2.0 / alpha + 1.0))
+    )
+    return window
+
+
+def receive_apodization_weights(
+    mode: str,
+    physical_element_numbers: np.ndarray,
+    active_element_count: int,
+    tukey_alpha: float = 0.5,
+) -> np.ndarray:
+    """Build receive weights in physical A1..AN order, then select active slots."""
+    mode = str(mode).strip().lower()
+    active_element_count = int(active_element_count)
+    if mode == "uniform":
+        full_window = np.ones(active_element_count, dtype=np.float64)
+    elif mode == "hann":
+        full_window = (
+            np.hanning(active_element_count).astype(np.float64)
+            if active_element_count >= 3
+            else np.ones(active_element_count, dtype=np.float64)
+        )
+    elif mode == "tukey":
+        full_window = tukey_window(active_element_count, tukey_alpha)
+    else:
+        raise ValueError(f"Unsupported receive apodization: {mode}")
+
+    indices = np.asarray(physical_element_numbers, dtype=np.int64) - 1
+    if np.any(indices < 0) or np.any(indices >= active_element_count):
+        raise ValueError("Physical element numbers fall outside A1..AN")
+    selected = full_window[indices]
+    if float(np.sum(selected)) <= np.finfo(np.float64).eps:
+        raise ValueError(
+            "Selected receive elements have zero total apodization weight; "
+            "use Tukey/uniform or include interior elements"
+        )
+    return selected
+
+
+def coherence_factor_from_accumulators(
+    coherent_sum: np.ndarray,
+    weighted_incoherent_power: np.ndarray,
+    weight_sum: float,
+) -> np.ndarray:
+    """Generalized coherence factor in [0, 1] for non-negative RX weights."""
+    denominator = float(weight_sum) * np.asarray(weighted_incoherent_power, dtype=np.float64)
+    numerator = np.abs(coherent_sum) ** 2
+    factor = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator, dtype=np.float64),
+        where=denominator > np.finfo(np.float64).eps,
+    )
+    return np.clip(factor, 0.0, 1.0)
+
+
+def suppress_gated_common_mode(
+    segment: np.ndarray,
+    tx_reference_sample: float,
+    max_depth_mm: float = 12.0,
+    strength: float = 0.75,
+) -> tuple[np.ndarray, float]:
+    """Suppress rank-one/common RX ringing only in a shallow post-TX gate.
+
+    A full-record common-mode subtraction would also remove a real broadside
+    planar reflector.  The cosine-tapered gate deliberately limits this
+    diagnostic option to the direct-coupling/ring-down region.
+    """
+    source = np.asarray(segment, dtype=np.float64)
+    if source.ndim != 2 or source.shape[1] < 2:
+        raise ValueError("Common-mode suppression requires a samples x channels matrix")
+    strength = float(strength)
+    max_depth_mm = float(max_depth_mm)
+    if not (0.0 <= strength <= 1.0):
+        raise ValueError("Common-mode strength must be in 0..1")
+    if max_depth_mm <= 0.0 or strength == 0.0:
+        return source.astype(segment.dtype, copy=True), 0.0
+
+    start = max(0, min(source.shape[0], int(round(float(tx_reference_sample)))))
+    stop = max(
+        start,
+        min(
+            source.shape[0],
+            int(
+                round(
+                    float(tx_reference_sample)
+                    + 2.0 * max_depth_mm * 1e-3 * FS_HZ / C_M_S
+                )
+            ),
+        ),
+    )
+    if stop <= start:
+        return source.astype(segment.dtype, copy=True), 0.0
+
+    common = np.median(source, axis=1)
+    gate = np.zeros(source.shape[0], dtype=np.float64)
+    gate[start:stop] = 1.0
+    fade_length = min(stop - start, max(16, int(round(2.0 * 1e-3 * FS_HZ / C_M_S))))
+    if fade_length > 1:
+        gate[stop - fade_length : stop] = 0.5 * (
+            1.0 + np.cos(np.linspace(0.0, np.pi, fade_length))
+        )
+
+    common_gate = common[start:stop]
+    denominator = float(np.dot(common_gate, common_gate))
+    if denominator <= np.finfo(np.float64).eps:
+        return source.astype(segment.dtype, copy=True), 0.0
+    coefficients = np.asarray(
+        [
+            np.clip(
+                float(np.dot(source[start:stop, channel], common_gate)) / denominator,
+                0.0,
+                2.0,
+            )
+            for channel in range(source.shape[1])
+        ],
+        dtype=np.float64,
+    )
+    removed = strength * gate[:, None] * common[:, None] * coefficients[None, :]
+    output = source - removed
+    input_rms = float(np.sqrt(np.mean(source[start:stop, :] ** 2)))
+    removed_rms = float(np.sqrt(np.mean(removed[start:stop, :] ** 2)))
+    removed_fraction = removed_rms / input_rms if input_rms > 0.0 else 0.0
+    return output.astype(segment.dtype, copy=False), removed_fraction
 
 
 def analytic_bandpass(values: np.ndarray) -> np.ndarray:
@@ -864,6 +1008,46 @@ def parse_arguments() -> argparse.Namespace:
         help="offline angle subset spacing, for example 2 uses -10,-8,...,+10 from a 1-degree capture",
     )
     parser.add_argument(
+        "--receive-apodization",
+        choices=["uniform", "hann", "tukey"],
+        default="uniform",
+        help="receive aperture weighting used by DAS (default: uniform)",
+    )
+    parser.add_argument(
+        "--tukey-alpha",
+        type=float,
+        default=0.5,
+        help="Tukey receive-window alpha in 0..1 (default: 0.5)",
+    )
+    parser.add_argument(
+        "--coherence-factor",
+        action="store_true",
+        help="multiply DAS amplitude by a conservative power of the generalized receive coherence factor",
+    )
+    parser.add_argument(
+        "--coherence-factor-exponent",
+        type=float,
+        default=0.5,
+        help="coherence-factor exponent in (0, 1], default 0.5 (square-root CF)",
+    )
+    parser.add_argument(
+        "--common-mode-ringdown-suppression",
+        action="store_true",
+        help="subtract a fitted channel-common waveform in a shallow post-TX gate",
+    )
+    parser.add_argument(
+        "--common-mode-max-depth-mm",
+        type=float,
+        default=12.0,
+        help="maximum depth affected by common-mode suppression (default: 12 mm)",
+    )
+    parser.add_argument(
+        "--common-mode-strength",
+        type=float,
+        default=0.5,
+        help="common-mode subtraction strength in 0..1 (default: 0.5)",
+    )
+    parser.add_argument(
         "--z-min-mm",
         type=float,
         default=4.0,
@@ -917,7 +1101,7 @@ def main() -> None:
     CENTER_FREQUENCY_HZ = float(
         args.center_frequency_mhz
         if args.center_frequency_mhz is not None
-        else array_config.get("center_frequency_hz", 2.5e6) / 1e6
+        else array_config.get("center_frequency_hz", 1.0e6) / 1e6
     ) * 1e6
     active_tx_elements = int(
         args.tx_elements
@@ -926,6 +1110,14 @@ def main() -> None:
     )
     if not (2 <= active_tx_elements <= 8):
         raise RuntimeError("Active TX element count must be 2..8")
+    if not (0.0 <= float(args.tukey_alpha) <= 1.0):
+        raise RuntimeError("Tukey alpha must be in 0..1")
+    if not (0.0 < float(args.coherence_factor_exponent) <= 1.0):
+        raise RuntimeError("Coherence-factor exponent must be in (0, 1]")
+    if not (0.0 <= float(args.common_mode_strength) <= 1.0):
+        raise RuntimeError("Common-mode strength must be in 0..1")
+    if float(args.common_mode_max_depth_mm) <= 0.0:
+        raise RuntimeError("Common-mode maximum depth must be positive")
     manifest_files = [
         input_dir / entry.get("filename", "")
         for entry in manifest.get("captures", [])
@@ -1063,6 +1255,13 @@ def main() -> None:
     element_x_m = (
         physical_element_numbers - (active_tx_elements + 1.0) / 2.0
     ) * PITCH_M
+    receive_weights = receive_apodization_weights(
+        args.receive_apodization,
+        physical_element_numbers,
+        active_tx_elements,
+        args.tukey_alpha,
+    )
+    receive_weight_sum = float(np.sum(receive_weights))
 
     zero_degree_files = [path for path in files if angle_from_name(path) == 0]
     if not zero_degree_files:
@@ -1100,6 +1299,7 @@ def main() -> None:
     event_images_by_angle: list[list[np.ndarray]] = []
     event_markers_by_angle: list[list[int]] = []
     event_references_by_angle: list[list[int]] = []
+    common_mode_removed_rms_fractions: list[float] = []
     reference_search_boundary_hits = 0
     reference_search_total = 0
     # Normal-trigger captures do not have a user-declared PRF contract.  The
@@ -1150,7 +1350,16 @@ def main() -> None:
             event_spectra.append(
                 np.mean(np.abs(np.fft.rfft(spectrum_window * taper, n=8192, axis=0)) ** 2, axis=1)
             )
-            analytic = analytic_bandpass(segment)
+            processing_segment = segment
+            if args.common_mode_ringdown_suppression:
+                processing_segment, removed_fraction = suppress_gated_common_mode(
+                    segment,
+                    marker_to_tx_samples,
+                    max_depth_mm=args.common_mode_max_depth_mm,
+                    strength=args.common_mode_strength,
+                )
+                common_mode_removed_rms_fractions.append(float(removed_fraction))
+            analytic = analytic_bandpass(processing_segment)
             event_analytic.append(analytic)
             channel_scale = np.percentile(np.abs(analytic[250:6500, :]), 99.5, axis=0)
             channel_scale = np.maximum(channel_scale, 1.0)
@@ -1174,15 +1383,29 @@ def main() -> None:
         reconstruction_reference = float(marker_to_tx_samples)
         for analytic, event_reference in zip(event_analytic, event_reference_samples):
             coherent_sum = np.zeros_like(xx_m, dtype=np.complex128)
-            for channel, element_x in enumerate(element_x_m):
+            weighted_incoherent_power = np.zeros_like(xx_m, dtype=np.float64)
+            for channel, (element_x, channel_weight) in enumerate(
+                zip(element_x_m, receive_weights)
+            ):
                 rx_time = np.sqrt((xx_m - element_x) ** 2 + zz_m**2) / C_M_S
                 # Each PRF emission gets its own direct-coupling timing reference.
                 # A single global offset can move a complete B-mode frame when
                 # the largest raw sample changes from one edge/ring-down peak to
                 # another.
                 sample = (tx_time + rx_time) * FS_HZ + reconstruction_reference
-                coherent_sum += interp_complex(analytic[:, channel], sample.ravel()).reshape(sample.shape)
-            event_images.append(np.abs(coherent_sum) / len(rx_indices))
+                delayed = interp_complex(
+                    analytic[:, channel], sample.ravel()
+                ).reshape(sample.shape)
+                coherent_sum += float(channel_weight) * delayed
+                weighted_incoherent_power += float(channel_weight) * np.abs(delayed) ** 2
+            event_image = np.abs(coherent_sum) / receive_weight_sum
+            if args.coherence_factor:
+                event_image *= coherence_factor_from_accumulators(
+                    coherent_sum,
+                    weighted_incoherent_power,
+                    receive_weight_sum,
+                ) ** float(args.coherence_factor_exponent)
+            event_images.append(event_image)
         angle_image = np.median(np.stack(event_images, axis=0), axis=0)
         accumulated_power += angle_image**2
         event_images_by_angle.append(event_images)
@@ -1388,7 +1611,9 @@ def main() -> None:
         title=(
             f"Plane-wave DAS · {active_tx_elements} physical T/R · "
             f"{len(rx_indices)} selected HSDC slots / {distinct_waveform_count} distinct · "
-            "RX map unverified"
+            f"RX {args.receive_apodization} · "
+            f"CF {'on' if args.coherence_factor else 'off'} · "
+            f"CM {'on' if args.common_mode_ringdown_suppression else 'off'}"
         ),
     )
     save_angle_depth_image(angle_depth_db.T, angles, z_mm, output_dir / "angle_depth_envelope.png", source_label)
@@ -1581,8 +1806,16 @@ def main() -> None:
         )
 
     summary = {
-        "method": "%d physical T/R elements; %d selected HSDC slots representing %d distinguishable waveforms; median summary plus per-PRF frames; incoherent power compounding over %d transmit angles"
-        % (active_tx_elements, len(rx_indices), distinct_waveform_count, len(files)),
+        "method": "%d physical T/R elements; %d selected HSDC slots representing %d distinguishable waveforms; RX %s apodization; coherence factor %s; shallow common-mode suppression %s; median summary plus per-PRF frames; incoherent power compounding over %d transmit angles"
+        % (
+            active_tx_elements,
+            len(rx_indices),
+            distinct_waveform_count,
+            args.receive_apodization,
+            "enabled" if args.coherence_factor else "disabled",
+            "enabled" if args.common_mode_ringdown_suppression else "disabled",
+            len(files),
+        ),
         "sampling_rate_hz": FS_HZ,
         "sound_speed_m_s": C_M_S,
         "input_directory": str(input_dir),
@@ -1604,6 +1837,30 @@ def main() -> None:
         "selected_das_rx_slots_1_based": selected_rx_slots,
         "selected_rx_slot_count": len(rx_indices),
         "unique_rx_waveforms_used": distinct_waveform_count,
+        "receive_apodization": {
+            "mode": args.receive_apodization,
+            "tukey_alpha": float(args.tukey_alpha),
+            "physical_element_numbers": physical_element_numbers.astype(int).tolist(),
+            "selected_weights": np.round(receive_weights, 8).tolist(),
+            "weight_sum": round(receive_weight_sum, 8),
+        },
+        "coherence_factor": {
+            "enabled": bool(args.coherence_factor),
+            "definition": "abs(sum(w*x))^2 / (sum(w) * sum(w*abs(x)^2))",
+            "exponent": float(args.coherence_factor_exponent),
+            "application": "CF^exponent multiplies each single-emission DAS amplitude before temporal/angle compounding",
+        },
+        "common_mode_ringdown_suppression": {
+            "enabled": bool(args.common_mode_ringdown_suppression),
+            "maximum_depth_mm": float(args.common_mode_max_depth_mm),
+            "strength": float(args.common_mode_strength),
+            "mean_removed_rms_fraction_in_gate": round(
+                float(np.mean(common_mode_removed_rms_fractions)), 6
+            )
+            if common_mode_removed_rms_fractions
+            else 0.0,
+            "safety_scope": "cosine-tapered shallow post-TX gate only; full-depth median subtraction is intentionally not used",
+        },
         "retained_exact_duplicate_pairs": retained_duplicate_pairs,
         "dropped_duplicate_slots_1_based": sorted(auto_excluded_slots),
         "tx_profile_batch_count": array_config.get("profile_batch_count", 1),
@@ -1714,6 +1971,11 @@ def main() -> None:
         "delayed_echo_spectral_peak_mhz": round(delayed_echo_peak_mhz, 4),
         "zero_degree_prf_cycle_count": len(zero_cycle_metrics),
         "angle_compound_prf_index_count": common_event_count,
+        "receive_apodization_mode": args.receive_apodization,
+        "coherence_factor_enabled": bool(args.coherence_factor),
+        "common_mode_ringdown_suppression_enabled": bool(
+            args.common_mode_ringdown_suppression
+        ),
         "capture_fingerprint_sha256": capture_fingerprint,
         "input_directory": str(input_dir),
     }

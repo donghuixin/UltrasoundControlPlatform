@@ -82,7 +82,7 @@
 | 高速射流 | 7.5 kHz / 10 s | 3.0 m/s | 已知狹窄管/泵速仿體 | 需連續 I/Q 固件 |
 | 長記錄 | 5 kHz / 30 s | 1.5 m/s | 約 37.5 個 75 BPM 周期 | 10 秒 Gate 通過後使用 |
 
-所有預設默認為 8 路物理孔徑、HSDC 槽 5–12、1.5 MHz、0° TX steering、60° flow angle 和 25 mm 門中心。實際深度與流束角必須按仿體幾何修改；預設名稱不代表速度量值已校準。
+所有預設默認為 8 路物理孔徑、HSDC 槽 5–12、1.0 MHz、0° TX steering、60° flow angle 和 25 mm 門中心。實際深度與流束角必須按仿體幾何修改；預設名稱不代表速度量值已校準。
 
 ## 5. 配置修正與變更範圍
 
@@ -93,7 +93,7 @@
 - `doppler_presets.py`：五個流量仿體預設；
 - `pw_doppler_analysis.py`：raw/IQ 分析、速度譜和周期 Gate；
 - `config_audit.py`：repository 配置唯讀審計；
-- `collector_config.example.json`：統一 1.5 MHz、8 陣元和槽 5–12 基線；
+- `collector_config.example.json`：統一 1.0 MHz、8 陣元和槽 5–12 基線；
 - `automation/tx7316_hsdc_batch_capture.py`：白名單 help 與實際 1/1.5/2/2.5/4 MHz 一致；
 - 兩個 HSDC 實驗 INI：損壞的 `Menu Enable` 文字恢復為 `Trigger Option`；
 - 對應單元測試、PW 操作指南和配置參考文檔。
@@ -118,7 +118,7 @@ python HKUST_BioData_Collector\app.py --self-test
 - app/model/presets/analyzer/audit Python 3 語法編譯：通過；
 - Python 2 採集自動化語法編譯：通過；
 - example/local JSON：可解析；
-- 1.5 MHz、0°、槽 5–12、8,388,608 samples、1 kHz dry run：通過，未啟動 GUI、TX 或採集。
+- 1.0 MHz、0°、槽 5–12、8,388,608 samples、1 kHz dry run：通過，未啟動 GUI、TX 或採集。
 
 ## 7. 下一次上機的最短閉環
 

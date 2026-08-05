@@ -26,27 +26,27 @@ python HKUST_BioData_Collector\config_audit.py --collector-config HKUST_BioData_
 已修正：
 
 1. 兩個HSDC實驗INI內損壞的`Menu Enable`文字已恢復為`Trigger Option`。
-2. Collector首次啟動與example/local JSON統一為1.5 MHz、8元素、HSDC槽5–12、tapered-5level。
+2. Collector首次啟動與example/local JSON統一為1.0 MHz、8元素、HSDC槽5–12、tapered-5level。
 3. 一鍵PW原始RF方案使用8,388,608 samples/channel：120 MSPS下約69.9 ms、約69個1 kHz脈衝，足夠64-pulse STFT，但不足心動周期。
 4. TX自動化的help文字已與實際白名單1/1.5/2/2.5/4 MHz一致。
 
 仍未通過：
 
 - 所有repository HSDC INI都未通過16/16唯一碼transport Gate；槽5–12只是避開目前已知固定重複對的8路降級映射。
-- `configs/tx7316/1MHz_5pulses.cfg`實際是4個聲學周期且不是0°完整preset；一鍵PW不直接使用該文件，而由自動腳本寫入並讀回1.5 MHz白名單pattern和固定角度delay。
+- `configs/tx7316/1MHz_5pulses.cfg`實際是4個聲學周期且不是0°完整preset；一鍵PW不直接使用該文件，而由自動腳本寫入並讀回1.0 MHz白名單pattern和固定角度delay。
 - AFE Subclass 1/2 cfg必須和同名HSDC實驗成對使用，不可混搭；完成transport試驗後還要恢復analog配置。
 
 ## 頸動脈流量仿體預設
 
-所有方案默認8路物理孔徑、HSDC槽5–12、1.5 MHz、0° TX steering、60° flow angle、25 mm門中心。深度和flow angle應按仿體幾何修改；預設名稱不代表量值已校準。
+所有方案默認8路物理孔徑、HSDC槽5–12、1.0 MHz、0° TX steering、60° flow angle、25 mm門中心。深度和flow angle應按仿體幾何修改；預設名稱不代表量值已校準。
 
 | 預設 | PRF / 時長 | 期望速度 | 速度Nyquist | 無模糊深度 | 75 BPM周期 | 狀態 |
 |---|---:|---:|---:|---:|---:|---|
-| 低速短塊 | 1 kHz / 0.07 s | 0.25 m/s | 0.513 m/s | 770 mm | 0.09 | 現有raw後端可執行 |
-| 常規波形 | 5 kHz / 10 s | 1.5 m/s | 2.567 m/s | 154 mm | 12.5 | 需連續I/Q固件 |
-| 低速/舒張流 | 2.5 kHz / 15 s | 0.6 m/s | 1.283 m/s | 308 mm | 18.75 | 需連續I/Q固件 |
-| 高速射流 | 7.5 kHz / 10 s | 3.0 m/s | 3.850 m/s | 102.7 mm | 12.5 | 需連續I/Q固件 |
-| 長記錄 | 5 kHz / 30 s | 1.5 m/s | 2.567 m/s | 154 mm | 37.5 | 10秒Gate通過後使用 |
+| 低速短塊 | 1 kHz / 0.07 s | 0.25 m/s | 0.770 m/s | 770 mm | 0.09 | 現有raw後端可執行 |
+| 常規波形 | 5 kHz / 10 s | 1.5 m/s | 3.850 m/s | 154 mm | 12.5 | 需連續I/Q固件 |
+| 低速/舒張流 | 2.5 kHz / 15 s | 0.6 m/s | 1.925 m/s | 308 mm | 18.75 | 需連續I/Q固件 |
+| 高速射流 | 7.5 kHz / 10 s | 3.0 m/s | 5.775 m/s | 102.7 mm | 12.5 | 需連續I/Q固件 |
+| 長記錄 | 5 kHz / 30 s | 1.5 m/s | 3.850 m/s | 154 mm | 37.5 | 10秒Gate通過後使用 |
 
 高速方案只用於已知狹窄管/泵速仿體，不把速度值直接映射成人體狹窄程度。IAC 2023標準也要求綜合灰階斑塊、ICA/CCA比值、PSV和EDV，而不是單一速度閾值。
 

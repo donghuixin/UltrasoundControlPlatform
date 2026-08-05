@@ -63,6 +63,12 @@ The TI update is accepted only if all of the following are true:
 
 Do not use B-mode image quality, channel correlation, or a plausible acoustic echo as a substitute for this digital transport gate.
 
+## 2026-08-04 follow-up
+
+The subsequent `Test00804.bin` capture (2,097,152 bytes, SHA-256 `F4BDB7844898C223FD98186157B4D56A37AFD9BC33DAA3A44634BCEC4CDF816D`) no longer showed the historical bit-exact duplicate groups. This supports using the TI pair as the current repaired normal-mode baseline.
+
+This observation is not promoted to a formal 16/16 acceptance unless the capture was made with 16 distinct stable internal converter codes. The demodulated-I/Q profile also requires its own converter/IQ-order gate; a passing No-Demod capture does not prove the alternate unpack path.
+
 ## If the gate still fails
 
 Return to TI with:

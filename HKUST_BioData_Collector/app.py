@@ -1,8 +1,9 @@
-"""HKUST Bio-data collector desktop UI.
+"""HKUST Ultrosound collector platform desktop UI.
 
 This application provides a safe front end for the existing TX7316/HSDC Pro
-automation and offline reconstruction scripts. It never changes high-voltage
-rails, TX pattern voltage levels, PRF, pulse count, or AFE gain.
+automation and offline reconstruction scripts. It can program and verify a
+small whitelist of TX pattern levels/timings and pulse counts, but it never
+changes the external high-voltage supplies, PRF, or AFE gain.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import webbrowser
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageTk
 
@@ -29,6 +31,20 @@ from delay_model import (
     build_angle_list,
     calculate_profiles,
     format_angles_cli,
+)
+from cw_doppler_model import (
+    CwDopplerConfig,
+    CwDopplerResult,
+    CwRowConfig,
+    IQ_RATE_DECIMATION,
+    calculate_cw_doppler,
+    cw_plan_as_dict,
+    estimate_dbud_velocity,
+)
+from cw_capture_ui import (
+    build_cw_capture_panel,
+    init_cw_capture_state,
+    serialize_cw_capture_state,
 )
 from doppler_model import (
     AFE_DEMOD_IQ_MODE,
@@ -51,6 +67,7 @@ from rapid_scan_model import (
     contiguous_prf_block_samples,
     plan_as_dict,
 )
+from tx_plan import TX_CYCLE_OPTIONS, TX_WAVEFORM_PRESETS, TxPlan, validate_tx_plan
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -62,6 +79,9 @@ PYTHON27 = Path(r"C:\Python27\python.exe")
 CONFIG_PATH = APP_DIR / "collector_config.json"
 DOPPLER_GUIDE = APP_DIR / "PW_DOPPLER_OPERATION_GUIDE.md"
 DOPPLER_ANALYSIS_SCRIPT = APP_DIR / "pw_doppler_analysis.py"
+CW_DOPPLER_GUIDE = APP_DIR / "CW_DOPPLER_OPERATION_GUIDE.md"
+CW_DOPPLER_STAGE_SCRIPT = CAPTURE_ROOT / "automation" / "stage_cw_doppler.py"
+CW_TX_CONTROL_SCRIPT = CAPTURE_ROOT / "automation" / "tx7316_cw_control.py"
 RX_CHANNELS_IN_CAPTURE_FILE = 16
 BYTES_PER_ADC_SAMPLE = 2
 ADC_SAMPLE_RATE_HZ = 120_000_000.0
@@ -80,10 +100,19 @@ ANGLE_SUBSET_OPTIONS = {
     "使用全部已採集角度": None,
     "按2°子集重建（1°資料隔一個取一個）": 2.0,
 }
+RECEIVE_APODIZATION_OPTIONS = {
+    "均勻（原始）": "uniform",
+    "Hann（較強旁瓣抑制）": "hann",
+    "Tukey α=0.5（折衷）": "tukey",
+}
 DOPPLER_CAPTURE_MODE_OPTIONS = {
     "現有可執行：HSDC原始RF單塊": RAW_RF_DDR_MODE,
     "最佳心動周期：FPGA距離門I/Q（待驗證固件）": FPGA_RANGE_GATE_IQ_MODE,
     "研究路徑：AFE Demod I/Q（待JESD解包）": AFE_DEMOD_IQ_MODE,
+}
+CW_DOPPLER_BACKEND_OPTIONS = {
+    "推薦長時：AFE類比CW I/Q + 外部同步ADC": "analog-cw-external-adc",
+    "研究驗證：AFE數位DDC/8 + TSW14J50": "digital-iq-tsw14j50",
 }
 
 
@@ -187,7 +216,7 @@ class CollectorApp(tk.Tk):
         # fonts below are Windows TrueType fonts, never pre-rendered bitmaps.
         monitor_dpi = max(96.0, float(self.winfo_fpixels("1i")))
         self.tk.call("tk", "scaling", monitor_dpi / 72.0)
-        self.title("HKUST Bio-data collector")
+        self.title("HKUST Ultrosound collector platform")
         self.geometry("1440x900")
         self.minsize(1120, 720)
         self.configure(bg=COLORS["background"])
@@ -202,9 +231,11 @@ class CollectorApp(tk.Tk):
         self.preview_filename = "plane_wave_das_bmode.png"
         self.current_prf_cycle_index = -1
         self.processing_active = False
+        self.tx_programming_active = False
         self.capture_watch: dict | None = None
         self.pages: dict[str, tk.Frame] = {}
         self.nav_buttons: dict[str, ttk.Button] = {}
+        self.active_page = ""
 
         self._configure_styles()
         self._create_variables()
@@ -213,11 +244,13 @@ class CollectorApp(tk.Tk):
         self._build_capture_page()
         self._build_auto_scan_page()
         self._build_doppler_page()
+        self._build_cw_doppler_page()
         self._build_processing_page()
         self.show_page(start_page if start_page in self.pages else "array")
         self.recalculate_delays(show_errors=False)
         self.recalculate_auto_scan(show_errors=False)
         self.recalculate_doppler(show_errors=False)
+        self.recalculate_cw_doppler(show_errors=False)
         self.refresh_capture_runs()
         self._poll_external_state()
 
@@ -225,7 +258,8 @@ class CollectorApp(tk.Tk):
         self.bind("<Alt-Key-2>", lambda _event: self.show_page("capture"))
         self.bind("<Alt-Key-3>", lambda _event: self.show_page("auto_scan"))
         self.bind("<Alt-Key-4>", lambda _event: self.show_page("doppler"))
-        self.bind("<Alt-Key-5>", lambda _event: self.show_page("processing"))
+        self.bind("<Alt-Key-5>", lambda _event: self.show_page("cw_doppler"))
+        self.bind("<Alt-Key-6>", lambda _event: self.show_page("processing"))
         self.bind("<Configure>", self._schedule_background)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -317,9 +351,20 @@ class CollectorApp(tk.Tk):
         self.pitch_var = tk.StringVar(value=str(get("pitch_mm", 1.59)))
         self.width_var = tk.StringVar(value=str(get("element_width_mm", 1.0)))
         self.rx_channels_var = tk.StringVar(
-            value=str(get("rx_hsdc_slots", "5,6,7,8,9,10,11,12"))
+            value=str(get("rx_hsdc_slots", "1,2,3,4,5,6,7,8"))
         )
-        self.frequency_var = tk.StringVar(value=str(get("center_frequency_mhz", 1.5)))
+        saved_frequency = str(get("center_frequency_mhz", 1.0))
+        saved_waveform = str(get("waveform_mode", "tapered-5level"))
+        try:
+            saved_frequency_value = float(saved_frequency)
+        except ValueError:
+            saved_frequency_value = 1.0
+        # Migrate the older hidden default (bipolar-a + a newly edited 1 MHz
+        # field) to a valid pair.  bipolar-a has only a qualified 1.5 MHz
+        # profile; leaving that stale value would make the first TX write fail.
+        if saved_waveform == "bipolar-a" and abs(saved_frequency_value - 1.5) > 1e-9:
+            saved_waveform = "tapered-5level"
+        self.frequency_var = tk.StringVar(value=saved_frequency)
         self.sound_speed_var = tk.StringVar(value=str(get("sound_speed_m_s", 1540.0)))
         self.quantum_var = tk.StringVar(value=str(get("delay_quantum_ns", 5.0)))
         self.min_angle_var = tk.StringVar(value=str(get("min_angle", -10.0)))
@@ -332,8 +377,23 @@ class CollectorApp(tk.Tk):
         self.settle_var = tk.StringVar(value=str(get("settle_seconds", 0.25)))
         self.trigger_var = tk.StringVar(value=str(get("trigger", "normal")))
         self.waveform_mode_var = tk.StringVar(
-            value=str(get("waveform_mode", "tapered-5level"))
+            value=saved_waveform
         )
+        self.tx_cycles_var = tk.StringVar(value=str(get("tx_cycles", 4)))
+        self.tx_hv_a_var = tk.StringVar(value=str(get("tx_hv_a_v", 100.0)))
+        self.tx_hv_b_var = tk.StringVar(value=str(get("tx_hv_b_v", 50.0)))
+        # A safety acknowledgement must never survive an application restart.
+        self.tx_plan_confirmed_var = tk.BooleanVar(value=False)
+        self.tx_plan_summary_var = tk.StringVar(value="TX 計畫尚未確認")
+        self.tx_plan_detail_var = tk.StringVar(value="")
+        for variable in (
+            self.waveform_mode_var,
+            self.frequency_var,
+            self.tx_cycles_var,
+            self.tx_hv_a_var,
+            self.tx_hv_b_var,
+        ):
+            variable.trace_add("write", lambda *_args: self._tx_plan_changed())
         self.output_root_var = tk.StringVar(value=str(get("output_root", DEFAULT_AUTO_RUNS)))
         self.capture_folder_var = tk.StringVar(value="")
         self.capture_status_var = tk.StringVar(value="尚未啟動採集")
@@ -351,10 +411,22 @@ class CollectorApp(tk.Tk):
             )
         )
         self.manual_das_rx_var = tk.StringVar(
-            value=str(get("manual_das_rx_slots", "5,6,7,8,9,10,11,12"))
+            value=str(get("manual_das_rx_slots", "1,2,3,4,5,6,7,8"))
         )
         self.reconstruction_angle_subset_var = tk.StringVar(
             value=str(get("reconstruction_angle_subset_label", "使用全部已採集角度"))
+        )
+        saved_apodization = str(
+            get("receive_apodization_label", "均勻（原始）")
+        )
+        if saved_apodization not in RECEIVE_APODIZATION_OPTIONS:
+            saved_apodization = "均勻（原始）"
+        self.receive_apodization_var = tk.StringVar(value=saved_apodization)
+        self.coherence_factor_var = tk.BooleanVar(
+            value=bool(get("coherence_factor_enabled", False))
+        )
+        self.common_mode_suppression_var = tk.BooleanVar(
+            value=bool(get("common_mode_ringdown_suppression_enabled", False))
         )
         self.processing_option_help_var = tk.StringVar(value="")
         self.result_summary_var = tk.StringVar(value="尚未載入分析結果。")
@@ -422,6 +494,55 @@ class CollectorApp(tk.Tk):
         self.doppler_result_var = tk.StringVar(value="速度譜會保存到 capture/analysis/pw_doppler。")
         self.doppler_result_run: Path | None = None
 
+        saved_cw_backend = str(
+            get("cw_backend_label", "推薦長時：AFE類比CW I/Q + 外部同步ADC")
+        )
+        if saved_cw_backend not in CW_DOPPLER_BACKEND_OPTIONS:
+            saved_cw_backend = "推薦長時：AFE類比CW I/Q + 外部同步ADC"
+        self.cw_backend_var = tk.StringVar(value=saved_cw_backend)
+        saved_cw_frequency = float(get("cw_center_frequency_mhz", 3.125))
+        if saved_cw_frequency not in (1.0, 2.0, 3.125, 4.0):
+            saved_cw_frequency = 3.125
+        saved_cw_iq_rate = float(get("cw_iq_output_rate_msps", 15.0))
+        if saved_cw_iq_rate not in (15.0, 10.0, 7.5, 6.0, 5.0):
+            saved_cw_iq_rate = 15.0
+        self.cw_frequency_var = tk.StringVar(value=f"{saved_cw_frequency:g}")
+        self.cw_adc_rate_var = tk.StringVar(value="120")
+        self.cw_iq_rate_var = tk.StringVar(value=f"{saved_cw_iq_rate:g}")
+        self.cw_decimation_var = tk.StringVar(value=str(int(round(120.0 / (2.0 * saved_cw_iq_rate)))))
+        self.cw_logical_channels_var = tk.StringVar(value="8")
+        self.cw_duration_var = tk.StringVar(value=str(get("cw_duration_s", 10.0)))
+        self.cw_analysis_rate_var = tk.StringVar(value=str(get("cw_analysis_rate_ksps", 50.0)))
+        self.cw_lowpass_var = tk.StringVar(value=str(get("cw_lowpass_khz", 20.0)))
+        self.cw_wall_filter_var = tk.StringVar(value=str(get("cw_wall_filter_hz", 150.0)))
+        self.cw_stft_samples_var = tk.StringVar(value=str(get("cw_stft_samples", 1024)))
+        self.cw_stft_overlap_var = tk.StringVar(value=str(get("cw_stft_overlap", 900)))
+        saved_angles = get("cw_row_angles_deg", [17.0, 20.0, 23.0])
+        saved_slots = get("cw_afe_rx_slots", [1, 2, 3])
+        saved_doppler_hz = get("cw_row_doppler_hz", ["", "", ""])
+        if not isinstance(saved_angles, list) or len(saved_angles) != 3:
+            saved_angles = [17.0, 20.0, 23.0]
+        if not isinstance(saved_slots, list) or len(saved_slots) != 3:
+            saved_slots = [1, 2, 3]
+        if not isinstance(saved_doppler_hz, list) or len(saved_doppler_hz) != 3:
+            saved_doppler_hz = ["", "", ""]
+        self.cw_row_angle_vars = [tk.StringVar(value=str(value)) for value in saved_angles]
+        self.cw_row_rx_slot_vars = [tk.StringVar(value=str(value)) for value in saved_slots]
+        self.cw_row_doppler_vars = [tk.StringVar(value=str(value)) for value in saved_doppler_hz]
+        self.cw_summary_var = tk.StringVar(value="等待CW Doppler幾何計算")
+        self.cw_storage_var = tk.StringVar(value="")
+        self.cw_warning_var = tk.StringVar(value="")
+        self.cw_velocity_result_var = tk.StringVar(value="輸入三行帶符號 fD（Hz）後計算 DBUD 流速與流向。")
+        self.cw_status_var = tk.StringVar(value="尚未導出CW Doppler配置方案。")
+        self.cw_phantom_confirmed_var = tk.BooleanVar(value=False)
+        self.cw_thermal_confirmed_var = tk.BooleanVar(value=False)
+        self.cw_path_confirmed_var = tk.BooleanVar(value=False)
+        self.cw_tx_low_voltage_confirmed_var = tk.BooleanVar(value=False)
+        self.cw_tx_supply_var = tk.StringVar(value=str(get("cw_tx_supply_v", 5.0)))
+        self.cw_tx_test_seconds_var = tk.StringVar(value=str(get("cw_tx_test_seconds", 3.0)))
+        self.cw_last_plan: Path | None = None
+        init_cw_capture_state(self, get, APP_DIR, CAPTURE_ROOT, PYTHON27)
+
     def _build_shell(self) -> None:
         self.background_label = tk.Label(self, bg=COLORS["background"], borderwidth=0)
         self.background_label.place(x=0, y=0, relwidth=1, relheight=1)
@@ -436,7 +557,7 @@ class CollectorApp(tk.Tk):
         header.grid_columnconfigure(1, weight=1)
         title_stack = tk.Frame(header, bg=COLORS["surface"])
         title_stack.grid(row=0, column=0, padx=24, pady=16, sticky="w")
-        tk.Label(title_stack, text="HKUST Bio-data collector", bg=COLORS["surface"], fg=COLORS["text"], font=("Segoe UI Semibold", 19)).pack(anchor="w")
+        tk.Label(title_stack, text="HKUST Ultrosound collector platform", bg=COLORS["surface"], fg=COLORS["text"], font=("Segoe UI Semibold", 19)).pack(anchor="w")
         tk.Label(title_stack, text="Ultrasound acquisition · delay control · offline reconstruction", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
         status_row = tk.Frame(header, bg=COLORS["surface"])
@@ -454,6 +575,7 @@ class CollectorApp(tk.Tk):
             ("capture", "自動採集  Capture"),
             ("auto_scan", "逐PRF掃描  Auto Scan"),
             ("doppler", "PW多普勒  Doppler"),
+            ("cw_doppler", "CW多普勒  DBUD"),
             ("processing", "處理與成像  Process"),
         ]
         for key, label in nav_items:
@@ -504,11 +626,56 @@ class CollectorApp(tk.Tk):
         entry.bind("<FocusOut>", lambda _event: self.recalculate_delays(show_errors=False))
         return entry
 
+    def _cw_labeled_entry(
+        self,
+        parent: tk.Widget,
+        label: str,
+        variable: tk.Variable,
+        width: int = 12,
+        readonly: bool = False,
+    ) -> ttk.Entry:
+        holder = tk.Frame(parent, bg=COLORS["surface"])
+        tk.Label(holder, text=label, bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        entry = ttk.Entry(holder, textvariable=variable, width=width, state="readonly" if readonly else "normal")
+        entry.pack(fill="x")
+        holder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        if not readonly:
+            entry.bind("<FocusOut>", lambda _event: self.recalculate_cw_doppler(show_errors=False))
+        return entry
+
+    def _cw_labeled_combo(
+        self,
+        parent: tk.Widget,
+        label: str,
+        variable: tk.Variable,
+        values: tuple[str, ...],
+        command,
+    ) -> ttk.Combobox:
+        holder = tk.Frame(parent, bg=COLORS["surface"])
+        tk.Label(holder, text=label, bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        combo = ttk.Combobox(holder, textvariable=variable, values=values, state="readonly")
+        combo.pack(fill="x")
+        holder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        combo.bind("<<ComboboxSelected>>", lambda _event: command())
+        return combo
+
     def _build_array_page(self) -> None:
         page = self._new_page("array")
         self._page_heading(page, "陣列幾何與角度延時", "輸入實際陣元參數；計算值會與正式 Python 2.7 採集腳本使用同一套公式。")
 
-        top_row = tk.Frame(page, bg=COLORS["background"])
+        scroll_host = tk.Frame(page, bg=COLORS["background"])
+        scroll_host.pack(fill="both", expand=True)
+        canvas = tk.Canvas(scroll_host, bg=COLORS["background"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        body = tk.Frame(canvas, bg=COLORS["background"])
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_window, width=event.width))
+
+        top_row = tk.Frame(body, bg=COLORS["background"])
         top_row.pack(fill="x", pady=(0, 14))
         top_row.grid_columnconfigure(0, weight=3)
         top_row.grid_columnconfigure(1, weight=2)
@@ -570,7 +737,92 @@ class CollectorApp(tk.Tk):
         ).pack(fill="x", padx=18, pady=(0, 8))
         ttk.Button(sweep, text="重新計算延時", style="Primary.TButton", command=self.recalculate_delays).pack(anchor="e", padx=18, pady=(0, 16))
 
-        summary_card = self._card(page)
+        tx_card = self._card(body)
+        tx_card._shadow_wrapper.pack(fill="x", pady=(0, 12))  # type: ignore[attr-defined]
+        tx_header = tk.Frame(tx_card, bg=COLORS["surface"])
+        tx_header.pack(fill="x", padx=18, pady=(14, 8))
+        ttk.Label(tx_header, text="TX7316 pattern plan", style="CardTitle.TLabel").pack(side="left")
+        self.tx_plan_status_label = tk.Label(
+            tx_header,
+            textvariable=self.tx_plan_summary_var,
+            bg=COLORS["warning_soft"],
+            fg=COLORS["warning"],
+            padx=10,
+            pady=5,
+            font=("Segoe UI Semibold", 9),
+            highlightbackground="#F0D49C",
+            highlightthickness=1,
+        )
+        self.tx_plan_status_label.pack(side="right")
+
+        tx_body = tk.Frame(tx_card, bg=COLORS["surface"])
+        tx_body.pack(fill="x", padx=18, pady=(0, 14))
+        tx_controls = tk.Frame(tx_body, bg=COLORS["surface"])
+        tx_controls.pack(side="left", fill="x", expand=True)
+
+        tx_row = tk.Frame(tx_controls, bg=COLORS["surface"])
+        tx_row.pack(fill="x")
+        waveform_holder = tk.Frame(tx_row, bg=COLORS["surface"])
+        waveform_holder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        tk.Label(waveform_holder, text="波形／電平路徑", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        self.tx_waveform_combo = ttk.Combobox(
+            waveform_holder,
+            textvariable=self.waveform_mode_var,
+            values=list(TX_WAVEFORM_PRESETS),
+            state="readonly",
+            width=22,
+        )
+        self.tx_waveform_combo.pack(fill="x")
+
+        cycles_holder = tk.Frame(tx_row, bg=COLORS["surface"])
+        cycles_holder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        tk.Label(cycles_holder, text="Burst cycles", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        self.tx_cycles_combo = ttk.Combobox(
+            cycles_holder,
+            textvariable=self.tx_cycles_var,
+            values=[str(value) for value in TX_CYCLE_OPTIONS],
+            state="readonly",
+            width=10,
+        )
+        self.tx_cycles_combo.pack(fill="x")
+        self._labeled_entry(tx_row, "外部實測 ±HV_A（外層）(V)", self.tx_hv_a_var, width=12)
+        self._labeled_entry(tx_row, "外部實測 ±HV_B（內層）(V)", self.tx_hv_b_var, width=12)
+
+        tk.Label(
+            tx_controls,
+            textvariable=self.tx_plan_detail_var,
+            bg=COLORS["warning_soft"],
+            fg=COLORS["warning"],
+            justify="left",
+            anchor="w",
+            padx=10,
+            pady=6,
+            font=("Segoe UI", 8),
+        ).pack(fill="x", pady=(8, 0))
+
+        preview_holder = tk.Frame(tx_body, bg=COLORS["surface"])
+        preview_holder.pack(side="left", fill="x", padx=(16, 0))
+        tk.Label(preview_holder, text="電平序列預覽（每個 base pattern）", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w")
+        self.tx_waveform_canvas = tk.Canvas(
+            preview_holder,
+            width=440,
+            height=96,
+            bg="#F8FAFD",
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+        )
+        self.tx_waveform_canvas.pack(pady=(5, 7))
+        self.tx_confirm_button = ttk.Button(
+            preview_holder,
+            text="確認並寫入 TX（BF 保持 OFF）",
+            style="Primary.TButton",
+            command=self._confirm_tx_plan,
+        )
+        self.tx_confirm_button.pack(anchor="e")
+        self.tx_waveform_combo.bind("<<ComboboxSelected>>", lambda _event: self._tx_plan_changed())
+        self.tx_cycles_combo.bind("<<ComboboxSelected>>", lambda _event: self._tx_plan_changed())
+
+        summary_card = self._card(body)
         summary_card._shadow_wrapper.pack(fill="x", pady=(0, 12))  # type: ignore[attr-defined]
         summary_line = tk.Frame(summary_card, bg=COLORS["surface"])
         summary_line.pack(fill="x", padx=18, pady=13)
@@ -579,7 +831,7 @@ class CollectorApp(tk.Tk):
         self.array_warning_label = tk.Label(summary_line, textvariable=self.array_warning_var, bg=COLORS["surface"], fg=COLORS["warning"], font=("Segoe UI Semibold", 9))
         self.array_warning_label.pack(side="right")
 
-        table_card = self._card(page)
+        table_card = self._card(body)
         table_card._shadow_wrapper.pack(fill="both", expand=True)  # type: ignore[attr-defined]
         table_header = tk.Frame(table_card, bg=COLORS["surface"])
         table_header.pack(fill="x", padx=18, pady=(14, 8))
@@ -630,30 +882,6 @@ class CollectorApp(tk.Tk):
         tk.Label(trigger_holder, text="Trigger", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
         ttk.Combobox(trigger_holder, textvariable=self.trigger_var, values=["normal", "software", "hardware"], state="readonly", width=12).pack(fill="x")
 
-        waveform_row = tk.Frame(settings_card, bg=COLORS["surface"])
-        waveform_row.pack(fill="x", padx=18, pady=(13, 0))
-        tk.Label(
-            waveform_row,
-            text="TX waveform",
-            bg=COLORS["surface"],
-            fg=COLORS["muted"],
-            font=("Segoe UI Semibold", 9),
-        ).pack(anchor="w", pady=(0, 5))
-        ttk.Combobox(
-            waveform_row,
-            textvariable=self.waveform_mode_var,
-            values=["bipolar-a", "tapered-5level"],
-            state="readonly",
-            width=28,
-        ).pack(anchor="w")
-        tk.Label(
-            waveform_row,
-            text="bipolar-a: 1.493 MHz, 2 cycles, PHV_A/MHV_A only (diagnostic)",
-            bg=COLORS["surface"],
-            fg=COLORS["muted"],
-            font=("Segoe UI", 8),
-        ).pack(anchor="w", pady=(4, 0))
-
         output_row = tk.Frame(settings_card, bg=COLORS["surface"])
         output_row.pack(fill="x", padx=18, pady=(13, 16))
         tk.Label(output_row, text="輸出根目錄", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
@@ -674,7 +902,7 @@ class CollectorApp(tk.Tk):
         ]
         for variable, text in zip(self.prerequisite_vars, prereq_text):
             ttk.Checkbutton(prereq_card, text=text, variable=variable).pack(anchor="w", padx=18, pady=2)
-        tk.Label(prereq_card, text="UI 不會修改 TX 高壓或 AFE 增益。", bg=COLORS["warning_soft"], fg=COLORS["warning"], padx=10, pady=7, font=("Segoe UI Semibold", 9)).pack(fill="x", padx=18, pady=(8, 16))
+        tk.Label(prereq_card, text="UI 會寫入並回讀 TX 波形／cycles／延時；不會改變外部高壓電源或 AFE 增益。", bg=COLORS["warning_soft"], fg=COLORS["warning"], padx=10, pady=7, font=("Segoe UI Semibold", 9)).pack(fill="x", padx=18, pady=(8, 16))
 
         command_card = self._card(body)
         command_card._shadow_wrapper.grid(row=1, column=0, columnspan=2, sticky="nsew")  # type: ignore[attr-defined]
@@ -1095,6 +1323,189 @@ class CollectorApp(tk.Tk):
         ttk.Button(analysis_row, text="打開速度譜", style="Secondary.TButton", command=self._open_doppler_result).pack(side="left", padx=(4, 12), pady=9)
         self._doppler_preset_changed()
 
+    def _cw_frequency_changed(self) -> None:
+        self.recalculate_cw_doppler(show_errors=False)
+        self._refresh_cw_tx_controls()
+
+    def _refresh_cw_tx_controls(self) -> None:
+        if not hasattr(self, "cw_tx_start_button"):
+            return
+        try:
+            stock_clock_frequency = abs(float(self.cw_frequency_var.get()) - 3.125) < 1e-9
+        except ValueError:
+            stock_clock_frequency = False
+        self.cw_tx_start_button.configure(state="normal" if stock_clock_frequency else "disabled")
+        if not stock_clock_frequency:
+            self.cw_status_var.set("精確1/2/4 MHz CW需要先把TX7316 BF_CLK硬件改為並驗證128 MHz；目前不會啟動CW。")
+
+    def _cw_iq_rate_changed(self) -> None:
+        try:
+            requested_hz = float(self.cw_iq_rate_var.get()) * 1e6
+            decimation = IQ_RATE_DECIMATION[requested_hz]
+        except (KeyError, ValueError):
+            return
+        self.cw_decimation_var.set(str(decimation))
+        self.recalculate_cw_doppler(show_errors=False)
+
+    def _scroll_cw_page(self, event: tk.Event) -> str | None:
+        if self.active_page != "cw_doppler" or not hasattr(self, "cw_scroll_canvas"):
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            self.cw_scroll_canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+            return "break"
+        return None
+
+    def _build_cw_doppler_page(self) -> None:
+        page = self._new_page("cw_doppler")
+        self._page_heading(
+            page,
+            "CW Doppler · 三傾角DBUD",
+            "依 Science Advances 2021 的三行傾角幾何估計流速與流向；本頁適配8個有效硬體通道。",
+        )
+        scroll_host = tk.Frame(page, bg=COLORS["background"])
+        scroll_host.pack(fill="both", expand=True)
+        canvas = tk.Canvas(scroll_host, bg=COLORS["background"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        body = tk.Frame(canvas, bg=COLORS["background"])
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_window, width=event.width))
+        self.cw_scroll_canvas = canvas
+        self.bind("<MouseWheel>", self._scroll_cw_page, add="+")
+        canvas.bind("<Enter>", lambda _event: canvas.focus_set())
+        canvas.bind("<Prior>", lambda _event: canvas.yview_scroll(-1, "pages"))
+        canvas.bind("<Next>", lambda _event: canvas.yview_scroll(1, "pages"))
+        canvas.bind("<Home>", lambda _event: canvas.yview_moveto(0.0))
+        canvas.bind("<End>", lambda _event: canvas.yview_moveto(1.0))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=0)
+
+        settings_card = self._card(body)
+        settings_card._shadow_wrapper.grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 12))  # type: ignore[attr-defined]
+        cw_settings_title = tk.Frame(settings_card, bg=COLORS["surface"])
+        cw_settings_title.pack(fill="x", padx=18, pady=(15, 10))
+        ttk.Label(cw_settings_title, text="Acquisition & processing", style="CardTitle.TLabel").pack(side="left")
+        ttk.Button(cw_settings_title, text="前往 DDR I/Q 採集", style="Primary.TButton", command=lambda: canvas.yview_moveto(0.28)).pack(side="right")
+        backend_holder = tk.Frame(settings_card, bg=COLORS["surface"])
+        backend_holder.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(backend_holder, text="資料路徑", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        backend = ttk.Combobox(backend_holder, textvariable=self.cw_backend_var, values=list(CW_DOPPLER_BACKEND_OPTIONS), state="readonly")
+        backend.pack(fill="x")
+        backend.bind("<<ComboboxSelected>>", lambda _event: self.recalculate_cw_doppler(show_errors=False))
+
+        primary = tk.Frame(settings_card, bg=COLORS["surface"])
+        primary.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_combo(primary, "TX／NCO中心頻率 (MHz)", self.cw_frequency_var, ("3.125", "1", "2", "4"), self._cw_frequency_changed)
+        self._cw_labeled_entry(primary, "AFE實體 ADC (MSPS)", self.cw_adc_rate_var, readonly=True)
+        tx_safety = tk.Frame(settings_card, bg=COLORS["surface"])
+        tx_safety.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_entry(tx_safety, "J1 正／負高壓軌實測絕對值 (V)", self.cw_tx_supply_var)
+        self._cw_labeled_entry(tx_safety, "限時 CW 測試 (s，最多 5)", self.cw_tx_test_seconds_var)
+        transport = tk.Frame(settings_card, bg=COLORS["surface"])
+        transport.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_combo(transport, "目標數位 I/Q 輸出率 (MSPS)", self.cw_iq_rate_var, ("15", "10", "7.5", "6", "5"), self._cw_iq_rate_changed)
+        self._cw_labeled_entry(transport, "AFE硬體抽取 D（I/Q率 = 120／2D）", self.cw_decimation_var, readonly=True)
+        channel_row = tk.Frame(settings_card, bg=COLORS["surface"])
+        channel_row.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_entry(channel_row, "有效硬體通道", self.cw_logical_channels_var, readonly=True)
+        timing = tk.Frame(settings_card, bg=COLORS["surface"])
+        timing.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_entry(timing, "目標時長 (s)", self.cw_duration_var)
+        self._cw_labeled_entry(timing, "分析率 (kSPS)", self.cw_analysis_rate_var)
+        filters = tk.Frame(settings_card, bg=COLORS["surface"])
+        filters.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_entry(filters, "低通 (kHz)", self.cw_lowpass_var)
+        self._cw_labeled_entry(filters, "Wall filter (Hz)", self.cw_wall_filter_var)
+        stft = tk.Frame(settings_card, bg=COLORS["surface"])
+        stft.pack(fill="x", padx=18, pady=(0, 10))
+        self._cw_labeled_entry(stft, "STFT window", self.cw_stft_samples_var)
+        self._cw_labeled_entry(stft, "STFT overlap", self.cw_stft_overlap_var)
+        tk.Label(
+            settings_card,
+            text="TX板載 BF_CLK=200 MHz；現有EVM可直接啟動的CW為3.125 MHz。精確1/2/4 MHz需要先把BF_CLK硬件改為並驗證128 MHz。實體ADC/JESD仍保持120 MSPS；I/Q抽取未完成匹配驗證前不寫AFE/HSDC。",
+            bg=COLORS["primary_soft"], fg=COLORS["primary_hover"], justify="left", anchor="w",
+            wraplength=430, padx=10, pady=8, font=("Segoe UI Semibold", 9),
+        ).pack(fill="x", padx=18, pady=(0, 14))
+
+        metrics_card = self._card(body)
+        metrics_card._shadow_wrapper.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 12))  # type: ignore[attr-defined]
+        ttk.Label(metrics_card, text="Feasibility", style="CardTitle.TLabel").pack(anchor="w", padx=18, pady=(15, 10))
+        tk.Label(metrics_card, textvariable=self.cw_summary_var, bg=COLORS["surface"], fg=COLORS["text"], justify="left", anchor="nw", wraplength=420, font=("Cascadia Mono", 10)).pack(fill="x", padx=18)
+        tk.Label(metrics_card, textvariable=self.cw_storage_var, bg=COLORS["surface_soft"], fg="#38516C", justify="left", anchor="nw", wraplength=420, padx=12, pady=10, font=("Cascadia Mono", 9), highlightbackground=COLORS["border"], highlightthickness=1).pack(fill="x", padx=18, pady=(10, 8))
+        tk.Label(metrics_card, textvariable=self.cw_warning_var, bg=COLORS["warning_soft"], fg=COLORS["warning"], justify="left", anchor="nw", wraplength=420, padx=12, pady=9, font=("Segoe UI Semibold", 9)).pack(fill="both", expand=True, padx=18, pady=(0, 16))
+
+        geometry_card = self._card(body)
+        geometry_card._shadow_wrapper.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(0, 12))  # type: ignore[attr-defined]
+        top = tk.Frame(geometry_card, bg=COLORS["surface"])
+        top.pack(fill="x", padx=18, pady=(14, 8))
+        ttk.Label(top, text="3-row / 8-channel tilted patch geometry", style="CardTitle.TLabel").pack(side="left")
+        ttk.Button(top, text="套用論文 17° / 20° / 23°", style="Secondary.TButton", command=self._reset_cw_paper_geometry).pack(side="right")
+        ttk.Button(top, text="計算DBUD速度", style="Primary.TButton", command=lambda: self.recalculate_cw_doppler(show_errors=True)).pack(side="right", padx=(0, 8))
+        headings = ("行", "實體貼片角 θ", "TX邏輯貼片", "RX邏輯貼片", "AFE RX slot", "實測 fD (Hz)", "組織內折射角 β")
+        grid = tk.Frame(geometry_card, bg=COLORS["surface"])
+        grid.pack(fill="x", padx=18, pady=(0, 14))
+        for column, heading in enumerate(headings):
+            tk.Label(grid, text=heading, bg=COLORS["surface_soft"], fg=COLORS["muted"], padx=8, pady=7, font=("Segoe UI Semibold", 9), highlightbackground=COLORS["border"], highlightthickness=1).grid(row=0, column=column, sticky="ew")
+            grid.grid_columnconfigure(column, weight=1 if column else 0)
+        tx_labels = ("1,3", "4,6", "7")
+        rx_labels = ("2", "5", "8")
+        self.cw_beta_labels = []
+        for index in range(3):
+            tk.Label(grid, text=f"Row {index + 1}", bg=COLORS["surface"], fg=COLORS["text"], padx=8, pady=8).grid(row=index + 1, column=0, sticky="ew")
+            angle_entry = ttk.Entry(grid, textvariable=self.cw_row_angle_vars[index], width=12)
+            angle_entry.grid(row=index + 1, column=1, sticky="ew", padx=6, pady=4)
+            angle_entry.bind("<FocusOut>", lambda _event: self.recalculate_cw_doppler(show_errors=False))
+            tk.Label(grid, text=tx_labels[index], bg=COLORS["surface"], fg=COLORS["text"], font=("Cascadia Mono", 9)).grid(row=index + 1, column=2, sticky="ew")
+            tk.Label(grid, text=rx_labels[index], bg=COLORS["surface"], fg=COLORS["text"], font=("Cascadia Mono", 9)).grid(row=index + 1, column=3, sticky="ew")
+            slot_entry = ttk.Entry(grid, textvariable=self.cw_row_rx_slot_vars[index], width=12)
+            slot_entry.grid(row=index + 1, column=4, sticky="ew", padx=6, pady=4)
+            slot_entry.bind("<FocusOut>", lambda _event: self.recalculate_cw_doppler(show_errors=False))
+            doppler_entry = ttk.Entry(grid, textvariable=self.cw_row_doppler_vars[index], width=12)
+            doppler_entry.grid(row=index + 1, column=5, sticky="ew", padx=6, pady=4)
+            doppler_entry.bind("<FocusOut>", lambda _event: self.recalculate_cw_doppler(show_errors=False))
+            beta = tk.Label(grid, text="—", bg=COLORS["surface"], fg=COLORS["primary"], font=("Cascadia Mono", 9, "bold"))
+            beta.grid(row=index + 1, column=6, sticky="ew")
+            self.cw_beta_labels.append(beta)
+        tk.Label(
+            geometry_card,
+            textvariable=self.cw_velocity_result_var,
+            bg=COLORS["primary_soft"],
+            fg=COLORS["primary_hover"],
+            anchor="w",
+            justify="left",
+            padx=12,
+            pady=9,
+            font=("Cascadia Mono", 9),
+        ).pack(fill="x", padx=18, pady=(0, 14))
+
+        workflow_card = self._card(body)
+        workflow_card._shadow_wrapper.grid(row=4, column=0, columnspan=2, sticky="nsew")  # type: ignore[attr-defined]
+        ttk.Label(workflow_card, text="Plan & hardware gates", style="CardTitle.TLabel").pack(anchor="w", padx=18, pady=(14, 8))
+        checks = tk.Frame(workflow_card, bg=COLORS["surface"])
+        checks.pack(fill="x", padx=18)
+        ttk.Checkbutton(checks, text="僅測凝膠／流體仿體，不接觸人體", variable=self.cw_phantom_confirmed_var).pack(anchor="w")
+        ttk.Checkbutton(checks, text="高壓電源限流、探頭溫升與占空風險已評估", variable=self.cw_thermal_confirmed_var).pack(anchor="w")
+        ttk.Checkbutton(checks, text="理解8個有效通道只有在匹配I/Q傳輸profile後才會減少DDR；類比CW_OUT需外部同步I/Q ADC", variable=self.cw_path_confirmed_var).pack(anchor="w")
+        ttk.Checkbutton(checks, text="已用萬用表確認J1正／負高壓軌均為5 V，所有5 V電源限流依TI指南設為500 mA", variable=self.cw_tx_low_voltage_confirmed_var).pack(anchor="w")
+        tk.Label(workflow_card, textvariable=self.cw_status_var, bg=COLORS["surface"], fg=COLORS["text"], anchor="w", font=("Segoe UI Semibold", 10)).pack(fill="x", padx=18, pady=(8, 8))
+        actions = tk.Frame(workflow_card, bg=COLORS["surface"])
+        actions.pack(fill="x", padx=18, pady=(0, 14))
+        ttk.Button(actions, text="查看論文", style="Secondary.TButton", command=lambda: webbrowser.open("https://www.science.org/doi/10.1126/sciadv.abi9283")).pack(side="left")
+        ttk.Button(actions, text="打開操作文檔", style="Secondary.TButton", command=self._open_cw_doppler_guide).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="導出配置方案", style="Primary.TButton", command=self.export_cw_doppler_plan).pack(side="right")
+        self.cw_stage_button = ttk.Button(actions, text="寫入寄存器／配置", style="Danger.TButton", command=self.stage_cw_doppler_tx)
+        self.cw_stage_button.pack(side="right", padx=(0, 8))
+        self.cw_tx_start_button = ttk.Button(actions, text="啟動限時3.125 MHz CW", style="Danger.TButton", command=self.start_tx7316_cw_test)
+        self.cw_tx_start_button.pack(side="right", padx=(0, 8))
+        self.cw_tx_stop_button = ttk.Button(actions, text="立即停止CW", style="Secondary.TButton", command=self.stop_tx7316_cw)
+        self.cw_tx_stop_button.pack(side="right", padx=(0, 8))
+        self._refresh_cw_tx_controls()
+        build_cw_capture_panel(self, body, row=2)
+
     def _build_processing_page(self) -> None:
         page = self._new_page("processing")
         self._page_heading(page, "離線重建與事件驗證", "每次強制從所選 capture_* 原始BIN重建；同時輸出逐PRF影像、時域事件驗證與通道QA。")
@@ -1112,7 +1523,7 @@ class CollectorApp(tk.Tk):
         ttk.Button(controls, text="選擇文件夾", style="Secondary.TButton", command=self._browse_capture_folder).pack(side="left", padx=(10, 8), pady=(20, 0))
         ttk.Button(controls, text="刷新列表", style="Secondary.TButton", command=self.refresh_capture_runs).pack(side="left", padx=(0, 8), pady=(20, 0))
         ttk.Button(controls, text="清除分析緩存", style="Secondary.TButton", command=self._clear_analysis_cache).pack(side="left", padx=(0, 8), pady=(20, 0))
-        self.process_button = ttk.Button(controls, text="強制重新運算", style="Primary.TButton", command=self.start_processing)
+        self.process_button = ttk.Button(controls, text="套用選項並重新成像", style="Primary.TButton", command=self.start_processing)
         self.process_button.pack(side="left", pady=(20, 0))
 
         processing_options = tk.Frame(control_card, bg=COLORS["surface"])
@@ -1173,6 +1584,54 @@ class CollectorApp(tk.Tk):
         self.reconstruction_angle_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self._processing_options_changed()
         )
+
+        artifact_options = tk.Frame(
+            control_card,
+            bg=COLORS["surface_soft"],
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+        )
+        artifact_options.pack(fill="x", padx=18, pady=(2, 10))
+        tk.Label(
+            artifact_options,
+            text="接收旁瓣／振鈴抑制（離線，可逆）",
+            bg=COLORS["surface_soft"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 9),
+        ).pack(side="left", padx=(10, 14), pady=9)
+
+        apodization_combo = ttk.Combobox(
+            artifact_options,
+            textvariable=self.receive_apodization_var,
+            values=list(RECEIVE_APODIZATION_OPTIONS),
+            state="readonly",
+            width=25,
+        )
+        apodization_combo.pack(side="left", padx=(0, 12), pady=7)
+        apodization_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._processing_options_changed()
+        )
+        ttk.Checkbutton(
+            artifact_options,
+            text="Coherence factor（保守 √CF）",
+            variable=self.coherence_factor_var,
+            command=self._processing_options_changed,
+        ).pack(side="left", padx=(0, 12), pady=5)
+        ttk.Checkbutton(
+            artifact_options,
+            text="淺層共模振鈴抑制（0–12 mm）",
+            variable=self.common_mode_suppression_var,
+            command=self._processing_options_changed,
+        ).pack(side="left", padx=(0, 12), pady=5)
+        tk.Label(
+            artifact_options,
+            text="不修改原始 BIN",
+            bg=COLORS["success_soft"],
+            fg=COLORS["success"],
+            padx=8,
+            pady=4,
+            font=("Segoe UI Semibold", 8),
+        ).pack(side="right", padx=9, pady=6)
 
         tk.Label(
             control_card,
@@ -1249,6 +1708,7 @@ class CollectorApp(tk.Tk):
 
     def show_page(self, name: str) -> None:
         self.pages[name].tkraise()
+        self.active_page = name
         for key, button in self.nav_buttons.items():
             button.configure(style="NavSelected.TButton" if key == name else "Nav.TButton")
 
@@ -1263,12 +1723,232 @@ class CollectorApp(tk.Tk):
             reverse_angle_sign=bool(self.reverse_var.get()),
         )
 
+    def _current_tx_plan(self) -> TxPlan:
+        try:
+            return validate_tx_plan(
+                self.waveform_mode_var.get(),
+                float(self.frequency_var.get()),
+                int(self.tx_cycles_var.get()),
+                float(self.tx_hv_a_var.get()),
+                float(self.tx_hv_b_var.get()),
+            )
+        except (ValueError, tk.TclError) as exc:
+            raise ValueError(str(exc)) from exc
+
+    def _tx_plan_changed(self) -> None:
+        self.tx_plan_confirmed_var.set(False)
+        self.tx_plan_summary_var.set("TX 計畫已修改，請重新確認")
+        if hasattr(self, "tx_plan_status_label"):
+            self.tx_plan_status_label.configure(
+                bg=COLORS["warning_soft"],
+                fg=COLORS["warning"],
+                highlightbackground="#F0D49C",
+            )
+        if hasattr(self, "tx_waveform_canvas"):
+            self._refresh_tx_waveform_preview()
+
+    def _refresh_tx_waveform_preview(self) -> None:
+        if not hasattr(self, "tx_waveform_canvas"):
+            return
+        canvas = self.tx_waveform_canvas
+        canvas.delete("all")
+        mode = self.waveform_mode_var.get()
+        preset = TX_WAVEFORM_PRESETS.get(mode)
+        if preset is None:
+            self.tx_plan_detail_var.set("未知波形；不會寫入硬件。")
+            return
+        try:
+            hv_a = abs(float(self.tx_hv_a_var.get()))
+        except ValueError:
+            hv_a = 100.0
+        try:
+            hv_b = abs(float(self.tx_hv_b_var.get()))
+        except ValueError:
+            hv_b = 50.0
+        scale = max(hv_b, hv_a, 1.0)
+        width = int(canvas.cget("width"))
+        height = int(canvas.cget("height"))
+        left, right, top, bottom = 34, width - 8, 8, height - 10
+        center_y = (top + bottom) / 2.0
+        canvas.create_line(left, center_y, right, center_y, fill="#9EB0C4", dash=(3, 3))
+        for label, magnitude in (("+A", hv_a), ("+B", hv_b), ("0", 0.0), ("-B", -hv_b), ("-A", -hv_a)):
+            y = center_y - (magnitude / scale) * (bottom - top) * 0.43
+            canvas.create_text(4, y, text=label, anchor="w", fill=COLORS["muted"], font=("Cascadia Mono", 7))
+        values = {"+A": hv_a, "-A": -hv_a, "+B": hv_b, "-B": -hv_b, "0": 0.0}
+        sequence = tuple(preset["levels"])
+        step_width = (right - left) / float(len(sequence))
+        points: list[float] = []
+        previous_y = center_y
+        for index, level in enumerate(sequence):
+            x0 = left + index * step_width
+            x1 = left + (index + 1) * step_width
+            y = center_y - (values[level] / scale) * (bottom - top) * 0.43
+            points.extend((x0, previous_y, x0, y, x1, y))
+            previous_y = y
+        points.extend((right, previous_y, right, center_y))
+        if len(points) >= 4:
+            canvas.create_line(*points, fill=COLORS["primary"], width=2)
+        try:
+            cycles_text = str(int(self.tx_cycles_var.get()))
+        except ValueError:
+            cycles_text = "?"
+        rail_note = (
+            "HV_A 是外層、HV_B 是內層，必須 |HV_A| > |HV_B|；"
+            if mode == "tapered-5level"
+            else "bipolar-a 只選擇 ±HV_A，±HV_B 不參與此波形；"
+        )
+        self.tx_plan_detail_var.set(
+            f"{preset['label']}；base level sequence：{' → '.join(sequence)}；重複為 {cycles_text} cycles。\n"
+            f"{rail_note}兩者是外部電源實測記錄，不會被 SPI 改變。"
+        )
+
+    def _confirm_tx_plan(self) -> None:
+        if self.tx_programming_active:
+            messagebox.showinfo("TX 正在寫入", "請等待目前的 Pattern 寫入與讀回完成。", parent=self)
+            return
+        if self.capture_watch is not None:
+            messagebox.showwarning("採集正在進行", "採集期間不能另外改寫 TX Pattern。", parent=self)
+            return
+        try:
+            plan = self._current_tx_plan()
+        except ValueError as exc:
+            messagebox.showerror("TX 計畫無效", str(exc), parent=self)
+            return
+        proceed = messagebox.askyesno(
+            "確認 TX7316 波形計畫",
+            f"{plan.summary}\n\n"
+            f"Level sequence：{' → '.join(plan.level_sequence)}\n\n"
+            "確認後程式會立即強制 TX_BF_MODE=0，寫入 Pattern Profile 0 與 Repeat/Tail，"
+            "並逐字讀回。這一步不連接HSDC、不採集，也不啟用發射；Delay Profile仍在採集時按角度寫入。\n\n"
+            "注意：±HV_A／±HV_B 是你量測並輸入的外部電源值；程式不會調節高壓電源。是否確認？",
+            parent=self,
+            icon="warning",
+        )
+        if not proceed:
+            return
+        if not is_windows_admin():
+            messagebox.showerror(
+                "需要管理員權限",
+                "請以管理員身份重新啟動 Collector；TX7316 GUI 與 Collector 必須使用相同權限。",
+                parent=self,
+            )
+            return
+        if not PYTHON27.is_file() or not AUTOMATION_SCRIPT.is_file():
+            messagebox.showerror(
+                "TX 寫入環境缺失",
+                f"找不到：\n{PYTHON27}\n或\n{AUTOMATION_SCRIPT}",
+                parent=self,
+            )
+            return
+        self._program_tx_plan(plan)
+
+    def _program_tx_plan(self, plan: TxPlan) -> None:
+        """Write a whitelisted Pattern Profile while transmit remains disabled."""
+        command = [
+            str(PYTHON27),
+            str(AUTOMATION_SCRIPT),
+            "--program-tx-only",
+            "--center-frequency-mhz",
+            f"{plan.frequency_mhz:.9g}",
+            "--waveform-mode",
+            plan.waveform_mode,
+            "--tx-cycles",
+            str(plan.cycles),
+            "--expected-hv-a-v",
+            f"{plan.hv_a_v:.9g}",
+            "--expected-hv-b-v",
+            f"{plan.hv_b_v:.9g}",
+        ]
+        self.tx_programming_active = True
+        self.tx_plan_confirmed_var.set(False)
+        self.tx_plan_summary_var.set("正在寫入並讀回 TX Pattern…")
+        self.tx_plan_status_label.configure(
+            bg=COLORS["warning_soft"],
+            fg=COLORS["warning"],
+            highlightbackground="#F0D49C",
+        )
+        self.tx_confirm_button.state(["disabled"])
+
+        def worker() -> None:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(APP_DIR),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
+                    check=False,
+                )
+                output = "\n".join(
+                    part.strip() for part in (completed.stdout, completed.stderr) if part.strip()
+                )
+                error = None if completed.returncode == 0 else (output or f"exit code {completed.returncode}")
+            except (OSError, subprocess.SubprocessError) as exc:
+                output = ""
+                error = str(exc)
+            self.after(0, lambda: self._finish_tx_programming(plan, output, error))
+
+        threading.Thread(target=worker, name="tx-pattern-program", daemon=True).start()
+
+    def _finish_tx_programming(
+        self,
+        programmed_plan: TxPlan,
+        output: str,
+        error: str | None,
+    ) -> None:
+        self.tx_programming_active = False
+        self.tx_confirm_button.state(["!disabled"])
+        if error is not None:
+            self.tx_plan_confirmed_var.set(False)
+            self.tx_plan_summary_var.set("TX Pattern 寫入失敗 · BF 已要求保持 OFF")
+            self.tx_plan_status_label.configure(
+                bg=COLORS["danger_soft"],
+                fg=COLORS["danger"],
+                highlightbackground="#E7BEC1",
+            )
+            messagebox.showerror("TX Pattern 寫入失敗", error[-1800:], parent=self)
+            return
+        try:
+            current_plan = self._current_tx_plan()
+        except ValueError:
+            current_plan = None
+        if current_plan != programmed_plan:
+            self.tx_plan_confirmed_var.set(False)
+            self.tx_plan_summary_var.set("TX 已寫入，但界面參數其後被修改")
+            messagebox.showwarning(
+                "TX 已寫入舊計畫",
+                "寫入期間界面參數發生變化；請按目前參數重新確認並寫入。",
+                parent=self,
+            )
+            return
+        self.tx_plan_confirmed_var.set(True)
+        self.tx_plan_summary_var.set("TX Pattern 已寫入／回讀 · TX_BF_MODE=OFF")
+        self.tx_plan_status_label.configure(
+            bg=COLORS["success_soft"],
+            fg=COLORS["success"],
+            highlightbackground="#CDE8DC",
+        )
+        self._update_command_preview(
+            self._current_array_config(), self._current_angles(), dry_run=False
+        )
+        detail = output[-1400:] if output else "Pattern Profile 0 readback matched."
+        messagebox.showinfo(
+            "TX Pattern 寫入成功",
+            f"{programmed_plan.summary}\n\n"
+            "Pattern Profile 0 已逐字讀回一致，TX_BF_MODE 保持 OFF。\n"
+            "若 TI GUI 畫面沒有立即刷新，切到其他頁籤再回到 Profile Configuration。\n\n"
+            f"{detail}",
+            parent=self,
+        )
+
     def _current_rx_slots(self) -> list[int]:
         text = self.rx_channels_var.get().strip()
         try:
             slots = [int(token.strip()) for token in text.split(",") if token.strip()]
         except ValueError as exc:
-            raise ValueError("HSDC接收槽必須是逗號分隔的整數，例如 5,6,7,8,9,10,11,12。") from exc
+            raise ValueError("HSDC接收槽必須是逗號分隔的整數，例如 1,2,3,4,5,6,7,8。") from exc
         expected = int(self.elements_var.get())
         if len(slots) != expected:
             raise ValueError(f"HSDC接收槽數必須等於物理T/R陣元數 {expected}；目前為 {slots}。")
@@ -1309,7 +1989,19 @@ class CollectorApp(tk.Tk):
                 else "自動模式每個逐bit重複組只保留映射中先出現的槽；不會刪除原始BIN。"
             )
         )
-        self.processing_option_help_var.set(f"{duplicate_text}  {angle_text}")
+        apodization_mode = RECEIVE_APODIZATION_OPTIONS.get(
+            self.receive_apodization_var.get(), "uniform"
+        )
+        artifact_notes = [f"RX窗={apodization_mode}"]
+        if self.coherence_factor_var.get():
+            artifact_notes.append("√CF按通道相位一致性抑制旁瓣，可能降低弱散斑")
+        if self.common_mode_suppression_var.get():
+            artifact_notes.append("共模只作用於TX後0–12 mm，不做全深度中值相減")
+        if len(artifact_notes) == 1 and apodization_mode == "uniform":
+            artifact_notes.append("保持原始DAS")
+        self.processing_option_help_var.set(
+            f"{duplicate_text}  {angle_text}\n離線成像：{'；'.join(artifact_notes)}。"
+        )
 
     def _current_angles(self) -> list[float]:
         return build_angle_list(float(self.min_angle_var.get()), float(self.max_angle_var.get()), float(self.angle_step_var.get()))
@@ -1369,6 +2061,7 @@ class CollectorApp(tk.Tk):
         if batch_count > 1:
             warning_parts.append(f"自動分{batch_count}批重寫16個硬件Profile")
         self.array_warning_var.set(" · ".join(warning_parts))
+        self._refresh_tx_waveform_preview()
         self._update_command_preview(config, angles, dry_run=False)
         if hasattr(self, "auto_scan_tree"):
             self.recalculate_auto_scan(show_errors=False)
@@ -1552,7 +2245,7 @@ class CollectorApp(tk.Tk):
                 status_var=self.auto_scan_status_var,
                 progress=self.auto_scan_progress,
                 button=self.auto_scan_start_button,
-                title="HKUST Bio-data Collector - Stock CPLD synchronized block scan",
+                title="HKUST Ultrosound collector platform - Stock CPLD synchronized block scan",
                 samples=block_samples,
                 repeats=1,
                 trigger="hardware",
@@ -1566,7 +2259,7 @@ class CollectorApp(tk.Tk):
                 status_var=self.auto_scan_status_var,
                 progress=self.auto_scan_progress,
                 button=self.auto_scan_start_button,
-                title="HKUST Bio-data Collector - Verified angle scan",
+                title="HKUST Ultrosound collector platform - Verified angle scan",
             )
             return
         if dry_run:
@@ -1642,7 +2335,7 @@ class CollectorApp(tk.Tk):
         self.elements_var.set("8")
         self.pitch_var.set("1.59")
         self.width_var.set("1.0")
-        self.rx_channels_var.set("5,6,7,8,9,10,11,12")
+        self.rx_channels_var.set("1,2,3,4,5,6,7,8")
         self.sound_speed_var.set("1540.0")
         self.quantum_var.set("5.0")
         self.waveform_mode_var.set("tapered-5level")
@@ -1860,6 +2553,317 @@ class CollectorApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("無法打開操作文檔", str(exc), parent=self)
 
+    def _current_cw_doppler_config(self) -> CwDopplerConfig:
+        row_layout = (
+            ((1, 3), 2),
+            ((4, 6), 5),
+            ((7,), 8),
+        )
+        rows = tuple(
+            CwRowConfig(
+                row_number=index + 1,
+                physical_angle_deg=float(self.cw_row_angle_vars[index].get()),
+                tx_patch_ids=layout[0],
+                rx_patch_id=layout[1],
+                afe_rx_slot=int(self.cw_row_rx_slot_vars[index].get()),
+            )
+            for index, layout in enumerate(row_layout)
+        )
+        return CwDopplerConfig(
+            center_frequency_hz=float(self.cw_frequency_var.get()) * 1e6,
+            adc_rate_hz=float(self.cw_adc_rate_var.get()) * 1e6,
+            decimation=IQ_RATE_DECIMATION[float(self.cw_iq_rate_var.get()) * 1e6],
+            logical_patch_count=int(self.cw_logical_channels_var.get()),
+            analysis_rate_hz=float(self.cw_analysis_rate_var.get()) * 1e3,
+            lowpass_hz=float(self.cw_lowpass_var.get()) * 1e3,
+            wall_filter_hz=float(self.cw_wall_filter_var.get()),
+            stft_samples=int(self.cw_stft_samples_var.get()),
+            stft_overlap=int(self.cw_stft_overlap_var.get()),
+            desired_duration_s=float(self.cw_duration_var.get()),
+            rows=rows,
+        )
+
+    def recalculate_cw_doppler(
+        self,
+        show_errors: bool = True,
+    ) -> tuple[CwDopplerConfig, CwDopplerResult] | None:
+        try:
+            config = self._current_cw_doppler_config()
+            result = calculate_cw_doppler(config)
+        except (ValueError, tk.TclError) as exc:
+            self.cw_summary_var.set("參數無效")
+            self.cw_storage_var.set(str(exc))
+            self.cw_warning_var.set("修正參數後再導出或寫入待機配置。")
+            if show_errors:
+                messagebox.showerror("CW Doppler參數錯誤", str(exc), parent=self)
+            return None
+        if hasattr(self, "cw_beta_labels"):
+            for label, beta in zip(self.cw_beta_labels, result.refracted_angles_deg):
+                label.configure(text=f"{beta:.2f}°")
+        doppler_text = [variable.get().strip() for variable in self.cw_row_doppler_vars]
+        if not any(doppler_text):
+            self.cw_velocity_result_var.set(
+                "輸入三行帶符號 fD（Hz）後計算 DBUD 流速與流向。"
+            )
+        elif not all(doppler_text):
+            self.cw_velocity_result_var.set("DBUD需要三行同時量得的帶符號 fD；目前輸入不完整。")
+        else:
+            try:
+                estimate = estimate_dbud_velocity(
+                    [float(value) for value in doppler_text],
+                    result.refracted_angles_deg,
+                    config.center_frequency_hz,
+                    config.tissue_sound_speed_m_s,
+                )
+            except ValueError as exc:
+                self.cw_velocity_result_var.set(f"DBUD計算失敗：{exc}")
+            else:
+                predicted = " / ".join(f"{value:+.1f}" for value in estimate.predicted_doppler_hz)
+                self.cw_velocity_result_var.set(
+                    f"DBUD signed v = {estimate.signed_speed_m_s:+.4f} m/s · "
+                    f"|v| = {estimate.speed_magnitude_m_s:.4f} m/s · "
+                    f"flow angle = {estimate.flow_angle_deg:+.2f}°\n"
+                    f"fD fitted = {predicted} Hz · residual RMS = {estimate.residual_rms_hz:.2f} Hz"
+                )
+        self.cw_summary_var.set(
+            f"f0 requested     {config.center_frequency_hz / 1e6:8.3f} MHz\n"
+            f"Physical ADC/D   {config.adc_rate_hz / 1e6:5.0f} / {config.decimation:d}\n"
+            f"Target I/Q       {result.iq_output_rate_hz / 1e6:8.3f} MSPS\n"
+            f"NCO word         0x{result.nco_word:04X}\n"
+            f"NCO actual       {result.nco_actual_hz / 1e6:8.6f} MHz\n"
+            f"AFE FIR preset   {'YES' if result.preset_fir_supported else 'NO - custom FIR'}\n"
+            f"beta rows        {' / '.join(f'{value:.2f}°' for value in result.refracted_angles_deg)}"
+        )
+        self.cw_storage_var.set(
+            f"Raw RF 16-slot   {result.raw_rf_16slot_bytes_per_s / 1e6:7.1f} MB/s · {result.raw_rf_16slot_duration_s:.2f} s\n"
+            f"IQ 8ch complex   {result.hsdc_16slot_bytes_per_s / 1e6:7.1f} MB/s · {result.hsdc_16slot_duration_s:.2f} s\n"
+            f"External I/Q     {result.external_iq_bytes / 1048576.0:7.2f} MiB / {config.desired_duration_s:g} s\n"
+            f"STFT bin         {result.stft_bin_hz:7.2f} Hz"
+        )
+        backend = CW_DOPPLER_BACKEND_OPTIONS[self.cw_backend_var.get()]
+        warnings = list(result.warnings)
+        if backend == "analog-cw-external-adc":
+            warnings.insert(0, "推薦：CW_OUTP/M後接同時取樣I/Q ADC；頁面所選MSPS是AFE數位研究路徑，不是類比輸出的必要取樣率。")
+        else:
+            warnings.insert(0, "研究模式：目前缺少與所選M值匹配、且通過通道唯一性Gate的AFE CFG與HSDC demod解包；禁止直接採十秒。")
+        self.cw_warning_var.set("\n".join(f"• {item}" for item in warnings))
+        return config, result
+
+    def _reset_cw_paper_geometry(self) -> None:
+        for variable, value in zip(self.cw_row_angle_vars, (17.0, 20.0, 23.0)):
+            variable.set(str(value))
+        for variable, value in zip(self.cw_row_rx_slot_vars, (1, 2, 3)):
+            variable.set(str(value))
+        self.recalculate_cw_doppler(show_errors=True)
+
+    def _cw_doppler_plan(self) -> dict:
+        calculated = self.recalculate_cw_doppler(show_errors=True)
+        if calculated is None:
+            raise ValueError("CW Doppler parameters are invalid.")
+        config, result = calculated
+        plan = cw_plan_as_dict(config, result)
+        doppler_text = [variable.get().strip() for variable in self.cw_row_doppler_vars]
+        plan["dbud_analysis"] = {
+            "measured_doppler_hz": [float(value) if value else None for value in doppler_text],
+            "simultaneous_three_row_measurement_required": True,
+            "result_text": self.cw_velocity_result_var.get(),
+        }
+        plan["selected_backend_label"] = self.cw_backend_var.get()
+        plan["selected_backend"] = CW_DOPPLER_BACKEND_OPTIONS[self.cw_backend_var.get()]
+        plan["gui_execution"] = {
+            "tx_safe_standby": "supported_stock_3p125MHz_vendor_profile_or_1_2_4MHz_finite_pattern_CW_OFF",
+            "tx_continuous_cw_start": (
+                "supported_stock_3p125MHz_low_voltage_timed_test"
+                if abs(config.center_frequency_hz - 3_125_000.0) < 1.0
+                else "blocked_requires_verified_128MHz_BF_CLK"
+            ),
+            "afe_digital_iq": "blocked_until_matching_AFE_CFG_and_TSW14J50_unpack_pass_channel_gate",
+            "requested_decimation": config.decimation,
+            "requested_iq_output_rate_hz": result.iq_output_rate_hz,
+            "preset_fir_supported": result.preset_fir_supported,
+            "reason": "The TI repaired No-Demod profile is the raw-RF baseline and must not be overwritten.",
+        }
+        plan["operator_confirmations"] = {
+            "phantom_only": bool(self.cw_phantom_confirmed_var.get()),
+            "thermal_and_current_limit": bool(self.cw_thermal_confirmed_var.get()),
+            "transport_path_understood": bool(self.cw_path_confirmed_var.get()),
+            "j1_plus_minus_5v_measured": bool(self.cw_tx_low_voltage_confirmed_var.get()),
+        }
+        plan["operation_guide"] = str(CW_DOPPLER_GUIDE)
+        return plan
+
+    def _write_cw_doppler_plan(self) -> Path:
+        plan = self._cw_doppler_plan()
+        plan_dir = Path(self.output_root_var.get()).expanduser().resolve() / "cw_doppler_plans"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        target = plan_dir / time.strftime("cw_doppler_plan_%Y%m%d_%H%M%S.json")
+        target.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.cw_last_plan = target
+        return target
+
+    def export_cw_doppler_plan(self) -> None:
+        try:
+            target = self._write_cw_doppler_plan()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("無法導出CW配置", str(exc), parent=self)
+            return
+        self.cw_status_var.set(f"CW配置方案已保存：{target}")
+        messagebox.showinfo("CW配置方案已保存", str(target), parent=self)
+
+    def _open_cw_doppler_guide(self) -> None:
+        if not CW_DOPPLER_GUIDE.exists():
+            messagebox.showerror("找不到操作文檔", str(CW_DOPPLER_GUIDE), parent=self)
+            return
+        try:
+            os.startfile(CW_DOPPLER_GUIDE)  # type: ignore[attr-defined]
+        except OSError as exc:
+            messagebox.showerror("無法打開操作文檔", str(exc), parent=self)
+
+    def stage_cw_doppler_tx(self) -> None:
+        if not all((self.cw_phantom_confirmed_var.get(), self.cw_thermal_confirmed_var.get(), self.cw_path_confirmed_var.get())):
+            messagebox.showwarning("尚未完成CW安全確認", "請先勾選三項硬體與仿體確認。", parent=self)
+            return
+        try:
+            config = self._current_cw_doppler_config()
+            stock_cw = abs(config.center_frequency_hz - 3_125_000.0) < 1.0
+            required_script = CW_TX_CONTROL_SCRIPT if stock_cw else CW_DOPPLER_STAGE_SCRIPT
+            if not required_script.exists() or not PYTHON27.exists():
+                raise ValueError("找不到Python 2.7或CW待機寫入腳本。")
+            plan_path = self._write_cw_doppler_plan()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("無法建立CW待機配置", str(exc), parent=self)
+            return
+        tx_description = (
+            "會載入TI隨TX7316 GUI安裝的3.125 MHz CW配置並讀回；完成後CW_EN與TX_BF_MODE保持OFF。\n\n"
+            if stock_cw else
+            f"會把{config.center_frequency_hz / 1e6:g} MHz有限Pattern寫入TX7316並讀回；CW_EN與TX_BF_MODE保持OFF。\n\n"
+        )
+        prompt = (
+            tx_description
+            + f"同時保存120 MSPS / M={config.decimation} / {config.iq_output_rate_hz / 1e6:g} MSPS I/Q配置方案。"
+            + "AFE與HSDC尚無通過通道唯一性驗收的匹配profile，因此本次不會誤寫這兩部分。繼續嗎？"
+        )
+        if not messagebox.askyesno(
+            "寫入可驗證寄存器／配置",
+            prompt,
+            parent=self,
+        ):
+            return
+        self.cw_stage_button.configure(state="disabled")
+        self.cw_status_var.set("正在寫入TX GUI寄存器並讀回，同時保存AFE/HSDC配置方案；CW保持OFF。")
+        if stock_cw:
+            command = [str(PYTHON27), str(CW_TX_CONTROL_SCRIPT), "--stage", "--output", str(plan_path.with_suffix(".tx_stage.json"))]
+        else:
+            command = [str(PYTHON27), str(CW_DOPPLER_STAGE_SCRIPT), "--plan", str(plan_path), "--apply"]
+
+        def worker() -> None:
+            completed = subprocess.run(command, capture_output=True, text=True, errors="replace")
+            output = (completed.stdout + "\n" + completed.stderr).strip()
+            self.after(0, lambda: finish(completed.returncode, output))
+
+        def finish(returncode: int, output: str) -> None:
+            self.cw_stage_button.configure(state="normal")
+            tail = "\n".join(output.splitlines()[-8:])
+            if returncode == 0:
+                self.cw_status_var.set(f"TX {config.center_frequency_hz / 1e6:g} MHz已寫入並讀回；AFE/HSDC I/Q配置已保存但因未驗證而未寫板。")
+                messagebox.showinfo("寄存器／配置處理完成", tail or "完成", parent=self)
+            else:
+                self.cw_status_var.set("TX安全待機寫入失敗；未解鎖連續CW。")
+                messagebox.showerror("TX安全待機失敗", tail or "未知錯誤", parent=self)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_tx7316_cw_test(self) -> None:
+        confirmations = (
+            self.cw_phantom_confirmed_var.get(),
+            self.cw_thermal_confirmed_var.get(),
+            self.cw_path_confirmed_var.get(),
+            self.cw_tx_low_voltage_confirmed_var.get(),
+        )
+        if not all(confirmations):
+            messagebox.showwarning("尚未完成CW安全確認", "請先完成四項安全確認，尤其是用萬用表確認J1正／負高壓軌均為5 V。", parent=self)
+            return
+        try:
+            config = self._current_cw_doppler_config()
+            if abs(config.center_frequency_hz - 3_125_000.0) >= 1.0:
+                raise ValueError("現有200 MHz BF_CLK只允許啟動3.125 MHz CW；精確1/2/4 MHz需要已驗證的128 MHz BF_CLK硬件。")
+            measured_supply = float(self.cw_tx_supply_var.get())
+            duration = float(self.cw_tx_test_seconds_var.get())
+            if abs(measured_supply - 5.0) > 0.1:
+                raise ValueError("J1正／負高壓軌的實測絕對值必須在4.9至5.1 V。")
+            if not 0.05 <= duration <= 5.0:
+                raise ValueError("限時CW測試必須介於0.05至5.0秒。")
+            if not CW_TX_CONTROL_SCRIPT.exists() or not PYTHON27.exists():
+                raise ValueError("找不到Python 2.7或TX7316 CW控制腳本。")
+            plan_path = self._write_cw_doppler_plan()
+            result_path = plan_path.with_suffix(".tx_cw_run.json")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("不能啟動CW", str(exc), parent=self)
+            return
+        if not messagebox.askyesno(
+            "最後確認：啟動限時CW",
+            f"將在流體／凝膠仿體上啟動3.125 MHz CW {duration:g}秒，之後自動關閉。\n\n"
+            "必須已用萬用表確認J1正、負高壓軌均為±5 V，所有5 V電源限流按TI指南設為500 mA。"
+            "5-level EVM只使用B側CW通道。是否繼續？",
+            parent=self,
+        ):
+            return
+        self.cw_tx_start_button.configure(state="disabled")
+        self.cw_stage_button.configure(state="disabled")
+        self.cw_status_var.set(f"正在輸出3.125 MHz CW，最遲{duration:g}秒後由腳本自動關閉……")
+        command = [
+            str(PYTHON27), str(CW_TX_CONTROL_SCRIPT),
+            "--run-seconds", f"{duration:g}",
+            "--acknowledge-5v-supply",
+            "--output", str(result_path),
+        ]
+
+        def worker() -> None:
+            completed = subprocess.run(command, capture_output=True, text=True, errors="replace")
+            output = (completed.stdout + "\n" + completed.stderr).strip()
+            self.after(0, lambda: finish(completed.returncode, output))
+
+        def finish(returncode: int, output: str) -> None:
+            self.cw_stage_button.configure(state="normal")
+            self._refresh_cw_tx_controls()
+            tail = "\n".join(output.splitlines()[-10:])
+            if returncode == 0:
+                self.cw_status_var.set("限時3.125 MHz CW已完成；CW_EN與TX_BF_MODE已讀回為OFF。")
+                messagebox.showinfo("CW測試完成並已關閉", tail or "完成", parent=self)
+            else:
+                self.cw_status_var.set("CW控制回報失敗；請按『立即停止CW』並切斷TX高壓供電確認。")
+                messagebox.showerror("CW控制失敗", tail or "未知錯誤", parent=self)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def stop_tx7316_cw(self) -> None:
+        if not CW_TX_CONTROL_SCRIPT.exists() or not PYTHON27.exists():
+            messagebox.showerror("不能停止CW", "找不到Python 2.7或TX7316 CW控制腳本；請立即切斷TX高壓供電。", parent=self)
+            return
+        stop_dir = Path(self.output_root_var.get()).expanduser().resolve() / "cw_doppler_plans"
+        stop_dir.mkdir(parents=True, exist_ok=True)
+        result_path = stop_dir / time.strftime("cw_emergency_stop_%Y%m%d_%H%M%S.json")
+        self.cw_tx_start_button.configure(state="disabled")
+        self.cw_status_var.set("正在清除CW_EN與TX_BF_MODE並讀回……")
+        command = [str(PYTHON27), str(CW_TX_CONTROL_SCRIPT), "--stop", "--output", str(result_path)]
+
+        def worker() -> None:
+            completed = subprocess.run(command, capture_output=True, text=True, errors="replace")
+            output = (completed.stdout + "\n" + completed.stderr).strip()
+            self.after(0, lambda: finish(completed.returncode, output))
+
+        def finish(returncode: int, output: str) -> None:
+            self._refresh_cw_tx_controls()
+            tail = "\n".join(output.splitlines()[-10:])
+            if returncode == 0:
+                self.cw_status_var.set("CW_EN與TX_BF_MODE已關閉並讀回。")
+                messagebox.showinfo("CW已停止", tail or "完成", parent=self)
+            else:
+                self.cw_status_var.set("軟件停止失敗：請立即切斷TX高壓供電。")
+                messagebox.showerror("停止CW失敗", (tail or "未知錯誤") + "\n\n請立即切斷TX高壓供電。", parent=self)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _latest_doppler_run(self) -> Path | None:
         if self.doppler_result_run is not None and self.doppler_result_run.is_dir():
             return self.doppler_result_run
@@ -2031,6 +3035,15 @@ class CollectorApp(tk.Tk):
             if not PYTHON27.exists() or not AUTOMATION_SCRIPT.exists():
                 messagebox.showerror("採集環境缺失", f"找不到：\n{PYTHON27}\n或\n{AUTOMATION_SCRIPT}", parent=self)
                 return
+            if not self.tx_plan_confirmed_var.get():
+                messagebox.showwarning(
+                    "TX 計畫尚未確認",
+                    "請回到第一頁確認波形、cycles 與外部高壓實測值。",
+                    parent=self,
+                )
+                self.show_page("array")
+                return
+            tx_plan = self._current_tx_plan()
             confirmations = (
                 self.doppler_phantom_confirmed_var.get(),
                 self.doppler_sync_confirmed_var.get(),
@@ -2042,6 +3055,8 @@ class CollectorApp(tk.Tk):
             proceed = messagebox.askyesno(
                 "啟動固定角度PW Doppler原始RF採集",
                 f"腳本會先寫入並讀回TX7316固定角度Delay Profile，再錄製原始RF。\n\n"
+                f"{tx_plan.summary}\n"
+                f"Level sequence：{' → '.join(tx_plan.level_sequence)}\n\n"
                 f"PRF={doppler_config.prf_hz:g} Hz只是已驗證硬件條件的記錄，程式本身不會修改CPLD PRF。\n"
                 f"單塊連續時長約 {doppler_result.block_duration_ms:.2f} ms；本次保存 {repeats} 個BIN，但BIN之間有長缺口。\n"
                 "完成後只對單一BIN做速度譜，不會拼接成心動波形。繼續嗎？",
@@ -2057,7 +3072,7 @@ class CollectorApp(tk.Tk):
             status_var=self.doppler_status_var,
             progress=self.doppler_progress,
             button=self.doppler_capture_button,
-            title="HKUST Bio-data Collector - PW Doppler short block",
+            title="HKUST Ultrosound collector platform - PW Doppler short block",
             plan=plan,
         )
 
@@ -2090,6 +3105,9 @@ class CollectorApp(tk.Tk):
         if expected_prfs_per_bin is not None and expected_prfs_per_bin <= 0:
             raise ValueError("Expected PRFs/BIN must be positive.")
 
+        plan = self._current_tx_plan()
+        waveform_mode = plan.waveform_mode
+
         arguments = [
             "--dry-run" if dry_run else "--capture",
             f"--angles={format_angles_cli(angles)}",
@@ -2104,7 +3122,13 @@ class CollectorApp(tk.Tk):
             "--center-frequency-mhz",
             f"{config.center_frequency_mhz:.6g}",
             "--waveform-mode",
-            self.waveform_mode_var.get(),
+            waveform_mode,
+            "--tx-cycles",
+            str(plan.cycles),
+            "--expected-hv-a-v",
+            f"{plan.hv_a_v:.6g}",
+            "--expected-hv-b-v",
+            f"{plan.hv_b_v:.6g}",
             "--sound-speed-m-s",
             f"{config.sound_speed_m_s:.6g}",
             "--delay-quantum-ns",
@@ -2146,7 +3170,8 @@ class CollectorApp(tk.Tk):
         try:
             arguments = self._capture_arguments(config, angles, dry_run)
             command = subprocess.list2cmdline([str(PYTHON27), str(AUTOMATION_SCRIPT), *arguments])
-        except (ValueError, OSError):
+        except (ValueError, OSError) as exc:
+            self.command_preview_var.set(f"配置錯誤：{exc}")
             return
         self.command_preview_var.set(command)
 
@@ -2185,9 +3210,10 @@ class CollectorApp(tk.Tk):
         else:
             self.command_preview_var.set(command_line)
 
+        capture_process = None
         try:
             if dry_run or is_windows_admin():
-                subprocess.Popen(
+                capture_process = subprocess.Popen(
                     ["cmd.exe", "/c", console_body],
                     cwd=str(APP_DIR),
                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
@@ -2219,6 +3245,7 @@ class CollectorApp(tk.Tk):
             "button": button,
             "plan": plan,
             "plan_written": False,
+            "process": capture_process,
         }
         self.after(1500, self._poll_capture_manifest)
 
@@ -2228,7 +3255,7 @@ class CollectorApp(tk.Tk):
         status_var: tk.StringVar | None = None,
         progress: ttk.Progressbar | None = None,
         button: ttk.Button | None = None,
-        title: str = "HKUST Bio-data Collector - Acquisition",
+        title: str = "HKUST Ultrosound collector platform - Acquisition",
         samples: int | None = None,
         repeats: int | None = None,
         trigger: str | None = None,
@@ -2253,6 +3280,7 @@ class CollectorApp(tk.Tk):
                 expected_prf_hz=expected_prf_hz,
                 expected_prfs_per_bin=expected_prfs_per_bin,
             )
+            capture_trigger = self.trigger_var.get() if trigger is None else trigger
         except ValueError as exc:
             messagebox.showerror("採集參數錯誤", str(exc), parent=self)
             return
@@ -2263,7 +3291,16 @@ class CollectorApp(tk.Tk):
             messagebox.showwarning("尚未完成 Pre-flight", "請逐項確認五個採集前條件。", parent=self)
             return
         if not dry_run:
-            if trigger == "hardware":
+            if not self.tx_plan_confirmed_var.get():
+                messagebox.showwarning(
+                    "TX 計畫尚未確認",
+                    "請回到第一頁檢查波形、cycles 與外部 ±HV_A／±HV_B 實測值，然後點擊「確認並寫入 TX」。",
+                    parent=self,
+                )
+                self.show_page("array")
+                return
+            plan = self._current_tx_plan()
+            if capture_trigger == "hardware":
                 trigger_ready = messagebox.askyesno(
                     "確認TSW外部觸發連線",
                     "硬件觸發模式要求：\n\n"
@@ -2294,7 +3331,11 @@ class CollectorApp(tk.Tk):
                     return
             proceed = messagebox.askyesno(
                 "啟動高壓凝膠採集",
-                "程式將控制已開啟的 TX7316 GUI 並觸發 HSDC Capture。\n\n確認 CW 已關閉，而且本次只測凝膠／仿體？",
+                "程式將控制已開啟的 TX7316 GUI 並觸發 HSDC Capture。\n\n"
+                f"{plan.summary}\n"
+                f"Level sequence：{' → '.join(plan.level_sequence)}\n\n"
+                "程式會寫入並回讀 Pattern／Repeat／Delay；不會調節外部高壓電源。\n"
+                "確認 CW 已關閉、外部電源與輸入值一致，而且本次只測凝膠／仿體？",
                 parent=self,
                 icon="warning",
             )
@@ -2326,6 +3367,24 @@ class CollectorApp(tk.Tk):
             if candidates:
                 watch["run"] = max(candidates, key=lambda path: path.stat().st_mtime)
         run = watch["run"]
+        process = watch.get("process")
+        if (
+            run is None
+            and process is not None
+            and process.poll() is not None
+            and time.time() - watch["started"] > 1.0
+        ):
+            progress.stop()
+            button.state(["!disabled"])
+            self.capture_watch = None
+            status_var.set("error · 採集子進程未建立 run 目錄")
+            messagebox.showerror(
+                "採集未啟動",
+                f"採集子進程已提前退出（exit code {process.returncode}），而且沒有建立 run 目錄。\n"
+                "請檢查管理員權限、Python 2.7 路徑和命令列 ERROR。",
+                parent=self,
+            )
+            return
         if run is not None:
             if watch.get("plan") is not None and not watch.get("plan_written"):
                 try:
@@ -2336,7 +3395,32 @@ class CollectorApp(tk.Tk):
                     watch["plan_written"] = True
                 except OSError:
                     pass
-            manifest = read_json(run / "capture_manifest.json")
+            manifest_path = run / "capture_manifest.json"
+            manifest = read_json(manifest_path)
+            if (
+                not manifest_path.is_file()
+                and process is not None
+                and process.poll() is not None
+                and time.time() - watch["started"] > 1.0
+            ):
+                progress.stop()
+                button.state(["!disabled"])
+                self.capture_watch = None
+                log_path = run / "run.log"
+                log_text = ""
+                try:
+                    log_text = log_path.read_text(encoding="utf-8", errors="replace").strip()
+                except OSError:
+                    pass
+                error_text = (
+                    "採集子進程已在建立 manifest 前退出。\n"
+                    f"exit code: {process.returncode}\n"
+                    f"run: {run}\n\n"
+                    f"{log_text or 'run.log 沒有記錄具體錯誤；請在命令列重跑並查看 ERROR。'}"
+                )
+                status_var.set(f"{run.name}: error · 子進程提前退出")
+                messagebox.showerror("採集未啟動", error_text, parent=self)
+                return
             status = manifest.get("status", "initializing")
             captures = len(manifest.get("captures", []))
             total = len(manifest.get("array", {}).get("profiles", [])) * int(manifest.get("arguments", {}).get("repeats", 1))
@@ -2420,6 +3504,13 @@ class CollectorApp(tk.Tk):
             rx_slots = self._current_rx_slots()
             duplicate_policy = DUPLICATE_POLICY_OPTIONS[self.duplicate_policy_var.get()]
             angle_subset_step = ANGLE_SUBSET_OPTIONS[self.reconstruction_angle_subset_var.get()]
+            receive_apodization = RECEIVE_APODIZATION_OPTIONS[
+                self.receive_apodization_var.get()
+            ]
+            coherence_factor_enabled = bool(self.coherence_factor_var.get())
+            common_mode_suppression_enabled = bool(
+                self.common_mode_suppression_var.get()
+            )
             manual_das_slots = (
                 self._current_manual_das_slots(rx_slots)
                 if duplicate_policy == "manual"
@@ -2443,6 +3534,8 @@ class CollectorApp(tk.Tk):
                 ",".join(str(slot) for slot in rx_slots),
                 "--duplicate-policy",
                 duplicate_policy,
+                "--receive-apodization",
+                receive_apodization,
             ]
             if manual_das_slots is not None:
                 command.extend(
@@ -2452,6 +3545,10 @@ class CollectorApp(tk.Tk):
                 command.extend(
                     ["--reconstruction-angle-step-deg", f"{angle_subset_step:g}"]
                 )
+            if coherence_factor_enabled:
+                command.append("--coherence-factor")
+            if common_mode_suppression_enabled:
+                command.append("--common-mode-ringdown-suppression")
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.after(0, lambda: self._processing_finished(folder, result))
 
@@ -2523,6 +3620,14 @@ class CollectorApp(tk.Tk):
         source_angle_count = summary.get("source_angle_count", len(summary.get("angles_deg", [])))
         used_angle_count = summary.get("reconstruction_angle_subset_count", len(summary.get("angles_deg", [])))
         reconstruction_step = summary.get("reconstruction_angle_step_deg", None)
+        apodization_summary = summary.get("receive_apodization", {})
+        apodization_mode = apodization_summary.get("mode", "uniform")
+        coherence_enabled = bool(summary.get("coherence_factor", {}).get("enabled", False))
+        common_mode_summary = summary.get("common_mode_ringdown_suppression", {})
+        common_mode_enabled = bool(common_mode_summary.get("enabled", False))
+        common_mode_removed = float(
+            common_mode_summary.get("mean_removed_rms_fraction_in_gate", 0.0) or 0.0
+        )
         self.result_summary_var.set(
             f"資料來源：{recorded_source}\n"
             f"SHA-256：{short_fingerprint}…\n"
@@ -2534,6 +3639,10 @@ class CollectorApp(tk.Tk):
             f"配置接收槽（A1…AN）：{configured_rx}\n"
             f"本次DAS使用槽：{used_rx}\n"
             f"重複處理策略：{duplicate_policy}\n"
+            f"接收窗：{apodization_mode}\n"
+            f"Coherence factor：{'開' if coherence_enabled else '關'}\n"
+            f"淺層共模抑制：{'開' if common_mode_enabled else '關'}"
+            f"（門內移除RMS {common_mode_removed * 100:.1f}%）\n"
             f"選中槽/可區分波形：{selected_rx_count}/{unique_rx}\n"
             f"本次排除槽：{excluded_slots or '無'}\n"
             f"陣元間距：{summary.get('array_pitch_mm', '—')} mm\n"
@@ -2681,6 +3790,9 @@ class CollectorApp(tk.Tk):
             "duplicate_policy_label": self.duplicate_policy_var.get(),
             "manual_das_rx_slots": self.manual_das_rx_var.get(),
             "reconstruction_angle_subset_label": self.reconstruction_angle_subset_var.get(),
+            "receive_apodization_label": self.receive_apodization_var.get(),
+            "coherence_factor_enabled": self.coherence_factor_var.get(),
+            "common_mode_ringdown_suppression_enabled": self.common_mode_suppression_var.get(),
             "center_frequency_mhz": self.frequency_var.get(),
             "sound_speed_m_s": self.sound_speed_var.get(),
             "delay_quantum_ns": self.quantum_var.get(),
@@ -2693,6 +3805,9 @@ class CollectorApp(tk.Tk):
             "settle_seconds": self.settle_var.get(),
             "trigger": self.trigger_var.get(),
             "waveform_mode": self.waveform_mode_var.get(),
+            "tx_cycles": self.tx_cycles_var.get(),
+            "tx_hv_a_v": self.tx_hv_a_var.get(),
+            "tx_hv_b_v": self.tx_hv_b_var.get(),
             "output_root": self.output_root_var.get(),
             "auto_scan_mode": self.auto_scan_mode_var.get(),
             "auto_scan_prf_hz": self.auto_scan_prf_var.get(),
@@ -2718,6 +3833,23 @@ class CollectorApp(tk.Tk):
             "doppler_block_samples": self.doppler_samples_var.get(),
             "doppler_repeats": self.doppler_repeats_var.get(),
             "doppler_trigger": self.doppler_trigger_var.get(),
+            "cw_backend_label": self.cw_backend_var.get(),
+            "cw_center_frequency_mhz": self.cw_frequency_var.get(),
+            "cw_tx_supply_v": self.cw_tx_supply_var.get(),
+            "cw_tx_test_seconds": self.cw_tx_test_seconds_var.get(),
+            "cw_adc_rate_msps": self.cw_adc_rate_var.get(),
+            "cw_iq_output_rate_msps": self.cw_iq_rate_var.get(),
+            "cw_decimation": self.cw_decimation_var.get(),
+            "cw_duration_s": self.cw_duration_var.get(),
+            "cw_analysis_rate_ksps": self.cw_analysis_rate_var.get(),
+            "cw_lowpass_khz": self.cw_lowpass_var.get(),
+            "cw_wall_filter_hz": self.cw_wall_filter_var.get(),
+            "cw_stft_samples": self.cw_stft_samples_var.get(),
+            "cw_stft_overlap": self.cw_stft_overlap_var.get(),
+            "cw_row_angles_deg": [variable.get() for variable in self.cw_row_angle_vars],
+            "cw_afe_rx_slots": [variable.get() for variable in self.cw_row_rx_slot_vars],
+            "cw_row_doppler_hz": [variable.get() for variable in self.cw_row_doppler_vars],
+            **serialize_cw_capture_state(self),
         }
 
     def _on_close(self) -> None:
@@ -2749,8 +3881,11 @@ def self_test() -> int:
     doppler = calculate_doppler(DopplerConfig())
     if not 170.0 < doppler.pulses_per_raw_block < 180.0:
         raise RuntimeError("PW Doppler timing self-test failed")
-    missing = [path for path in (AUTOMATION_SCRIPT, RECONSTRUCTION_SCRIPT, PYTHON27) if not path.exists()]
-    print("HKUST Bio-data collector self-test")
+    cw_doppler = calculate_cw_doppler(CwDopplerConfig())
+    if cw_doppler.nco_word != 0x0889 or abs(cw_doppler.iq_output_rate_hz - 15_000_000.0) > 1.0:
+        raise RuntimeError("CW Doppler model self-test failed")
+    missing = [path for path in (AUTOMATION_SCRIPT, RECONSTRUCTION_SCRIPT, CW_DOPPLER_STAGE_SCRIPT, CW_TX_CONTROL_SCRIPT, PYTHON27) if not path.exists()]
+    print("HKUST Ultrosound collector platform self-test")
     print(f"delay profiles: {len(profiles)}")
     print(f"1-degree sweep: {len(fine_profiles)} angles / 2 hardware batches")
     print(
@@ -2762,6 +3897,7 @@ def self_test() -> int:
         f"{stock_cpld_samples:,} samples per channel"
     )
     print(f"PW Doppler default block: {doppler.block_duration_ms:.2f} ms / {doppler.pulses_per_raw_block:.1f} pulses")
+    print(f"CW Doppler default: NCO=0x{cw_doppler.nco_word:04X} / I/Q={cw_doppler.iq_output_rate_hz / 1e6:.1f} MSPS")
     print(f"automation script: {AUTOMATION_SCRIPT}")
     print(f"reconstruction script: {RECONSTRUCTION_SCRIPT}")
     print(f"Python 2.7: {PYTHON27}")
@@ -2773,11 +3909,11 @@ def self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="HKUST Bio-data collector desktop UI")
+    parser = argparse.ArgumentParser(description="HKUST Ultrosound collector platform desktop UI")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--start-page",
-        choices=["array", "capture", "auto_scan", "doppler", "processing"],
+        choices=["array", "capture", "auto_scan", "doppler", "cw_doppler", "processing"],
         default="array",
         help="page displayed when the desktop UI opens",
     )
