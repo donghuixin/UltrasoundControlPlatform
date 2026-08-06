@@ -30,6 +30,19 @@
 
 如果只做TCP協議研究，先關高壓與TX_BF，在單獨時段使用TSW_controller並保存命令日誌，不把它混入正式採集。
 
+## 2026-08-07 Demod軟件相容性紀錄
+
+本機目前實際版本是：
+
+| 軟件 | 本機版本 |
+|---|---:|
+| AFE58JD48 EVM GUI | 2.0.0.1 |
+| HSDC Pro | 5.31 |
+
+本機TI transition instructions明確指定的測試組合則是`HSDC Pro 5.00 + AFE58JD48 EVM GUI 1.2.3`，而AFE58JD48 EVM user guide的Demodulator Plot原流程以TSW14J56為對象。2026-08-07的M=4測試已證明AFE同步字到達TSW14J50/HSDC，但AFE GUI的Import callback只生成0-byte `Demod Separated Data.csv`。
+
+AFE GUI原始設定只列出HSDC `4.7, 4.8, 4.9, 5, 5.10`。把`5.31`追加到supported list只會繞過版本檢查，不代表Automation、臨時BIN或decompressor相容。後續優先取得TI指定的舊版軟件在隔離環境復測；若無法取得，應以既有BIN實作離線separator。完整證據與長時採集決策見[2026-08-07交接](22_HANDOFF_2026-08-07_AFE_DEMOD_IMPORT_AND_LONG_DOPPLER.md)。
+
 ## 倉庫配置的來源
 
 - `configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini`：使用 literal M=16 的實驗 profile，不是已修復基線。2026-07-25 的唯一數位碼測試顯示它、matched S2/M16 與 TI 安裝包原始 M=5 profile 都產生相同四組複製通道；必須等待 TI 更新的 TSW14J50 firmware INI/firmware，並以 `automation/jesd_transport_qa.py` 做 16/16 驗收。詳見 `docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md`。

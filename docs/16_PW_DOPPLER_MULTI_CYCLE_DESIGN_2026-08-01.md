@@ -4,6 +4,8 @@
 
 範圍：水槽、凝膠、流體仿體和已知流量台架。這不是人體或醫療用途授權。
 
+> **2026-08-07更新：** TI transition的60 MSPS、4-lane、M=4 DownConv配置已能在HSDC捕獲transport資料與`0x2772`同步burst，表示AFE DDC/decimation資料路徑已啟動；但本機`HSDC 5.31 + AFE GUI 2.0.0.1`的Demod Import無法產生分離後資料。近期先以TI指定的`HSDC 5.00 + AFE GUI 1.2.3`或離線separator完成M=4解包，再驗M=8/M=12。完整證據見[2026-08-07交接](22_HANDOFF_2026-08-07_AFE_DEMOD_IMPORT_AND_LONG_DOPPLER.md)。最終10至60秒方案仍是FPGA按PRF距離門只存slow-time I/Q。
+
 ## 1. 最終結論
 
 要看出心動周期和周期內的流速變化，最佳資料路徑不是把HSDC原始RF的Samples/channel一直拉大，而是：
