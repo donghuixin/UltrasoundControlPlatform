@@ -1,5 +1,7 @@
 # 2026-08-07 AFE Demod Import與長時多普勒交接
 
+> **2026-08-19更新：** TI後續確認TSW14J50不能只選8個AFE通道寫DDR，完整16通道都會被DDR接收；同時指出FPGA可捕獲`33,554,432`個HSDC樣點並由GUI導出。本文第7節的8通道容量解釋保留作歷史記錄，最新Dec=32容量核算、操作Gate與TI待確認項目以[Dec=32完整SOP](24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)和[2026-08-19總交接](25_HANDOFF_2026-08-19_SCOPE_DOPPLER_AND_TI_DEC32.md)為準。
+
 適用平台：TX7316EVM + AFE58JD48EVM + TSW14J50/HSDC Pro。
 
 範圍：實驗室信號源、水槽、凝膠與流體仿體。不得用於人體或臨床診斷。
