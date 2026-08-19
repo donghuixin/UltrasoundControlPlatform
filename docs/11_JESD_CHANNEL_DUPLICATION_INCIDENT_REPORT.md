@@ -126,6 +126,8 @@ TI 工程師在該 thread 表示 TSW14J50 firmware INI 中存在 bug，並要求
 
 ## 7. 下一步閉環，不再盲試
 
+本地 PDF 與 JESD instantiation RTL 已完成交叉審查。它們確認了 per-die L4/M8 與 aggregate L8/M16 的層級差異，也確認 JESD link core 後仍可能由 lane/converter decoder 造成穩定錯列；但 reference RTL 的 `lane_mode=8` 與兩條 active-lane 示例屬於另一個驗證台，不能當作 TSW14J50RX 的實際實作。完整適用邊界與 Gate 見 [`docs/13_JESD_DOCUMENT_EVIDENCE_AND_DECISION_GATES.md`](13_JESD_DOCUMENT_EVIDENCE_AND_DECISION_GATES.md)。
+
 ### Gate A：取得 TI 更新文件
 
 向 TI 提交本報告、三組 profile 名稱、TSW14J50 firmware 名稱/版本、HSDC Pro 5.31，以及固定碼映射。索取：

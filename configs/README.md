@@ -9,6 +9,14 @@
 
 Treat these as versioned baselines, not proof of the live hardware state. After loading, read back the registers/JESD status and verify the acoustic spectrum from a real capture.
 
+Run the repository-level read-only syntax/consistency audit from the repository root:
+
+```powershell
+python HKUST_BioData_Collector\config_audit.py
+```
+
+An audit PASS means the snapshots are structurally consistent with their documented purpose. It does not promote an experimental HSDC/AFE pair to a validated transport profile.
+
 As of 2026-07-25, matched S1/K8, matched S2/K8 and the TI-installed original
 S1 profile all produced the same deterministic duplicate mapping
 `[3,5] [4,6] [9,15] [10,16]`. The TI-original profile's private
@@ -16,3 +24,10 @@ S1 profile all produced the same deterministic duplicate mapping
 cannot be interpreted by name alone. Do not promote or overwrite any installed
 profile until a candidate passes `automation/jesd_transport_qa.py` with 16/16
 distinct stable codes. See `docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md`.
+
+As of 2026-08-03, TI supplied a corrected AFE GUI CFG and updated
+TSW14J50RX firmware INI for this incident. The raw vendor files are kept only
+in the local private support archive, not in this public repository. See
+`docs/20_TI_AFE58JD48_CHANNEL_COPY_FIX_2026-08-03.md` and
+`diagnostics/ti_channel_copy_fix_packet_20260803.json` for checksums,
+installation notes and acceptance criteria.

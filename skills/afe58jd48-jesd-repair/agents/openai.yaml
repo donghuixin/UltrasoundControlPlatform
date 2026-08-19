@@ -1,0 +1,4 @@
+interface:
+  display_name: "AFE58JD48 JESD Repair"
+  short_description: "Debug TI ultrasound transport, calibration, and Doppler"
+  default_prompt: "Use $afe58jd48-jesd-repair to diagnose this TI ultrasound capture, calibration, imaging, or Doppler problem and define the next falsifiable test."

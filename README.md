@@ -3,9 +3,9 @@
 面向 TX7316EVM、AFE58JD48EVM、TSW14J50 與 HSDC Pro 的實驗室超聲控制、採集與離線重建平台。工程包含：
 
 - 8 陣元（可配置 2–8）TX7316 Delay Profile 計算與多角度自動採集；
-- HKUST Bio-data collector 白色桌面 UI；
+- HKUST Ultrosound collector platform 白色桌面 UI；
 - HSDC raw BIN 離線檢查、軟對齊、帶通、DAS、角度複合與 2D/3D 圖；
-- 1 MHz B-mode 成像、PW Doppler 可行性計算及短塊採集入口；
+- 1 MHz B-mode 成像、PW Doppler 短塊採集、連續 I/Q 分析與流量仿體預設；
 - 5-level / Appendix C 3-level 接線、觸發、冷啟動、關機與排障文檔；
 - 本機已驗證的 HSDC 16 通道 INI 和 TX7316 1 MHz preset。
 
@@ -28,6 +28,18 @@
 13. [JESD 通道複製故障報告與三組閉環證據](docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md)
 14. [可直接交給 Opus 的 JESD 去幀求助包](docs/12_OPUS_HELP_REQUEST_JESD_DEFRAMING.md)
 15. [2026-07-26 項目交接與恢復開發順序](docs/13_PROJECT_HANDOFF_2026-07-26.md)
+16. [JESD PDF/RTL 證據、適用邊界與下一步 Gate](docs/13_JESD_DOCUMENT_EVIDENCE_AND_DECISION_GATES.md)
+17. [2026-07-31 採集、低幅事件修復與成像交接](docs/14_HANDOFF_2026-07-31_CAPTURE_AND_RECONSTRUCTION.md)
+18. [開源工程、架構與可遷移知識庫](docs/15_OPEN_SOURCE_ARCHITECTURE_AND_KNOWLEDGE_BASE.md)
+19. [PW Doppler 多心動周期採集設計](docs/16_PW_DOPPLER_MULTI_CYCLE_DESIGN_2026-08-01.md)
+20. [頸動脈樣流量仿體預設與配置審計](docs/17_CAROTID_FLOW_PHANTOM_PRESETS_2026-08-01.md)
+21. [2026-08-01 PW Doppler 與配置審計總交接](docs/18_HANDOFF_2026-08-01_PW_DOPPLER_AND_CONFIG_AUDIT.md)
+22. [TSW14J50 J13 外部觸發修正與驗證](docs/19_HSDC_J13_EXTERNAL_TRIGGER_FIX_2026-08-01.md)
+23. [2026-08-03 TI AFE58JD48 通道複製修復包](docs/20_TI_AFE58JD48_CHANNEL_COPY_FIX_2026-08-03.md)
+24. [2026-08-04—05 CW/IQ、採集與成像兩日總交接](docs/21_HANDOFF_2026-08-05_TWO_DAY_UPDATE_CW_IQ_CAPTURE_AND_IMAGING.md)
+25. [2026-08-07 AFE Demod Import與長時多普勒交接](docs/22_HANDOFF_2026-08-07_AFE_DEMOD_IMPORT_AND_LONG_DOPPLER.md)
+26. [AFE58JD48 + TSW14J50 Dec=32長時PW Doppler完整SOP](docs/24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)
+27. [2026-08-19示波器Doppler與TI Dec=32總交接](docs/25_HANDOFF_2026-08-19_SCOPE_DOPPLER_AND_TI_DEC32.md)
 
 ## 目前硬件基線
 
@@ -65,8 +77,8 @@ HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd
 
 ## 配置安裝
 
-- [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 與 S2 版本都是實驗 profile，**目前沒有任何一份通過 16/16 唯一碼 Gate**，不可稱為已修復配置。
-- 2026-07-25 的 matched S1/K8、matched S2/K8 和 TI 安裝包原始 S1 profile 均穩定出現 `3=5、4=6、9=15、10=16`。三份 BIN 位元級完全相同；詳見 [故障報告](docs/11_JESD_CHANNEL_DUPLICATION_INCIDENT_REPORT.md)。下一步是向 TI 索取已修復的 TSW14J50 firmware INI/firmware，而不是繼續猜 `M` 或 Subclass。
+- [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 與 S2 版本只保留作實驗／觸發對照；normal raw-RF 現以 TI 2026-08-03 提供的 `JESD 120MSPS_Subclass1_8L.CFG` + `AFE58JD48_Custom_PLL_MODE_40x_No Demod_SubClass1` 為基線。
+- 2026-07-25 舊 profile 曾穩定出現 `3=5、4=6、9=15、10=16`。2026-08-04 的 `Test00804.bin` 未再看到該 bit-exact copy signature，但仍應用 16 個 distinct digital codes 完成最終 16/16 acceptance；Demod/IQ profile 必須另外重跑 Gate。詳見 [修復包](docs/20_TI_AFE58JD48_CHANNEL_COPY_FIX_2026-08-03.md)與[最新交接](docs/21_HANDOFF_2026-08-05_TWO_DAY_UPDATE_CW_IQ_CAPTURE_AND_IMAGING.md)。
 - TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。自動採集現已支持1、1.5、2、2.5、4 MHz白名單pattern寫入與寄存器回讀；回讀不匹配時Fail Closed。載入任何cfg後仍須確認`TX_BF_MODE`與CW OFF。
 - 第一次啟動 UI 會讀取 `collector_config.example.json`，退出時把本機設置寫入被 Git 忽略的 `collector_config.json`。
 
@@ -87,6 +99,7 @@ configs/hsdc/                  HSDC Pro ADC/JESD profile
 configs/tx7316/                TX7316 1 MHz preset
 diagnostics/                   去識別化 QA 摘要（不含 raw BIN）
 docs/                          硬件和操作文檔
+skills/                        可重用的 Codex JESD 排障技能與安全診斷工具
 reconstruct_ultrasound.py      HSDC BIN 離線分析與成像
 auto_runs/                     本機採集輸出；不會提交到 Git
 ```

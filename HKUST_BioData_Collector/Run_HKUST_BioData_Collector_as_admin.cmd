@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title HKUST Bio-data collector Launcher
+title HKUST Ultrosound collector platform Launcher
 
 where python.exe >nul 2>nul
 if errorlevel 1 (
@@ -16,7 +16,7 @@ for /f "delims=" %%P in ('where python.exe') do (
 )
 
 :python_found
-echo Launching HKUST Bio-data collector as Administrator...
+echo Launching HKUST Ultrosound collector platform as Administrator...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "$python='%PYTHON_EXE%'; $app='%~dp0app.py'; Start-Process -Verb RunAs -FilePath $python -WorkingDirectory '%~dp0' -ArgumentList @($app)"
 
