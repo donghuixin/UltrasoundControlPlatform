@@ -1,0 +1,80 @@
+// Tang Primer 25K eight-channel HV7350 beamformer constraints.
+// Target: GW5A-LV25MG121NC1/I0, 3.3 V I/O.
+
+IO_LOC "clk" E2;
+IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
+
+// S2 starts/stops transmission. Each S1 press advances one steering angle.
+IO_LOC "s1" H11;
+IO_PORT "s1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
+
+IO_LOC "s2" H10;
+IO_PORT "s2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
+
+IO_LOC "led_ready" E8;
+IO_PORT "led_ready" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "led_done" D7;
+IO_PORT "led_done" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// 115200-baud host configuration interface. Connect a 3.3 V USB-UART TX to
+// B3 and share GND. C3 is held at the UART idle level in this version.
+IO_LOC "uart_rx_b3" B3;
+IO_PORT "uart_rx_b3" IO_TYPE=LVCMOS33 PULL_MODE=UP BANK_VCCIO=3.3;
+
+IO_LOC "uart_tx_c3" C3;
+IO_PORT "uart_tx_c3" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// J11 is the 2 us pre-transmit trigger; J10 is the 10 kHz PRF reference.
+IO_LOC "sync_prf_j11" J11;
+IO_PORT "sync_prf_j11" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "sync_prf_j10" J10;
+IO_PORT "sync_prf_j10" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// HV7350 CH1..CH8 logic inputs. PIN1..PIN8 pulse; NIN1..NIN8 are tied low by
+// the synthesized positive-unipolar-mode logic.
+IO_LOC "tx1_pin_b2" B2;
+IO_PORT "tx1_pin_b2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx1_nin_f2" F2;
+IO_PORT "tx1_nin_f2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx2_pin_e1" E1;
+IO_PORT "tx2_pin_e1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx2_nin_e3" E3;
+IO_PORT "tx2_nin_e3" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx3_pin_j1" J1;
+IO_PORT "tx3_pin_j1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx3_nin_g4" G4;
+IO_PORT "tx3_nin_g4" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx4_pin_h1" H1;
+IO_PORT "tx4_pin_h1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx4_nin_k7" K7;
+IO_PORT "tx4_nin_k7" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx5_pin_l7" L7;
+IO_PORT "tx5_pin_l7" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx5_nin_l10" L10;
+IO_PORT "tx5_nin_l10" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx6_pin_l9" L9;
+IO_PORT "tx6_pin_l9" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx6_nin_j8" J8;
+IO_PORT "tx6_nin_j8" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx7_pin_f7" F7;
+IO_PORT "tx7_pin_f7" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx7_nin_k8" K8;
+IO_PORT "tx7_nin_k8" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "tx8_pin_l8" L8;
+IO_PORT "tx8_pin_l8" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "tx8_nin_k10" K10;
+IO_PORT "tx8_nin_k10" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
+
+// These pins overlap the dock-board SDRAM bus. Keep the SDRAM deselected so
+// it cannot drive B2/F2/E1 while they are transmit outputs.
+IO_LOC "sdram_disable_n_k9" K9;
+IO_PORT "sdram_disable_n_k9" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8 BANK_VCCIO=3.3;

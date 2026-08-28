@@ -6,6 +6,7 @@ comparison_*/
 analysis/
 **/analysis/
 *.bin
+!fpga/tang_primer_25k_hv7350/artifacts/*.bin
 *.npy
 *.npz
 *.mat
