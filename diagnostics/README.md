@@ -11,3 +11,7 @@ and large generated analysis outputs are intentionally excluded.
   TI support packet that supplied a corrected AFE GUI CFG plus updated
   TSW14J50RX firmware INI for the channel-copy investigation. Raw vendor files
   are intentionally excluded; only sizes, hashes and validation gates are kept.
+- `ti_demod_trigger_packet_20260828.json`: redacted inventory and derived
+  format/capacity facts for TI's 60-MSPS, PLL40x, M=32 demodulation packet and
+  external-trigger guidance. The vendor ZIP and extracted files remain in the
+  local private archive; they are deliberately not published here.

@@ -2958,7 +2958,23 @@ class CollectorApp(tk.Tk):
             if visible
             else f"周期未通過 · {periodicity.get('reason', '證據不足')}"
         )
-        self.doppler_analysis_status_var.set(f"{run.name} · {cardiac_text}")
+        detection = result.get("flow_detection", {})
+        classification = detection.get("classification")
+        flow_text = {
+            "accepted_against_static_reference": "血流證據通過靜態對照",
+            "signal_candidate_needs_static_reference": "發現血流候選，待靜態對照",
+            "rejected": "血流品質門未通過",
+        }.get(classification, "未執行血流定位")
+        selected_gate = detection.get("selected_gate", {})
+        selected_depth = selected_gate.get("center_mm")
+        depth_text = (
+            f" · 自動門 {float(selected_depth):.2f} mm"
+            if selected_depth is not None
+            else ""
+        )
+        self.doppler_analysis_status_var.set(
+            f"{run.name} · {flow_text} · {cardiac_text}{depth_text}"
+        )
         self.doppler_result_var.set(
             f"連續 {float(result.get('record_duration_s', 0.0)):.3f} s · "
             f"預估 {float(result.get('expected_heart_cycles', 0.0)):.2f} 周期 · "

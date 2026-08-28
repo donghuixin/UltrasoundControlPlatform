@@ -311,6 +311,30 @@ TI EVM手冊驗證的簡單入口是：
 
 2026-08-01新增`Carotid flow-phantom preset`：包含現有後端可執行的1 kHz/70 ms低速短塊，以及2.5/5/7.5 kHz和10/15/30秒的連續I/Q目標方案。完成Pre-flight後，短塊可點`一鍵採集並分析`；I/Q方案在後端未驗收前顯示`一鍵載入並檢查Gate`。完整參數、配置審計和用途限制見[`docs/17_CAROTID_FLOW_PHANTOM_PRESETS_2026-08-01.md`](../docs/17_CAROTID_FLOW_PHANTOM_PRESETS_2026-08-01.md)。
 
+### 13.1 2026-08-17：自動距離門與血流品質門
+
+離線分析現在把「出現頻譜」與「找到可信血流」分開：
+
+1. raw-RF 路徑會在目標深度前後預設各 5 mm 做相干 I/Q 距離掃描，再選 2 mm 左右的局部候選門；不再只相信手工輸入的單一深度。
+2. FPGA/AFE 後端可提供 `pw_doppler_input_iq.npz`，其中 `iq` 建議為 `(pulse, depth, channel)`，並同時保存 `depth_mm`、`prf_hz`、`pulse_index` 或 `timestamp_s`。
+3. 若 `pulse_index`／時間戳有缺口，分析只保留最長連續段，絕不跨缺口拼接慢時間波形。
+4. 若同一 NPZ 另含 `reference_iq`（相同深度及通道排列的零流量／靜態參考），才可能輸出 `accepted_against_static_reference`；沒有參考時最高只報 `signal_candidate_needs_static_reference`。
+5. 自動門同時檢查去壁濾波 SNR、正負頻方向性、固定梳狀線占比、相鄰深度支持、相對鄰近門的局部性、全深度共模運動相關及 Kasai lag-1 相干度。任何一項失敗，都不把週期亮線升級為已接受血流。
+
+可在 `doppler_session_plan.json > configuration` 選填：
+
+```json
+{
+  "auto_locate_flow": true,
+  "search_depth_min_mm": 18.0,
+  "search_depth_max_mm": 30.0,
+  "flow_max_hz": 2000.0,
+  "comb_base_hz": null
+}
+```
+
+`comb_base_hz`只應由靜態對照或獨立設備審計得到，不能為了刪除候選資料中的峰而事後調整。
+
 ## 14. 官方資料依據
 
 - `TX7316EVM_User_Guide_sbou224_.pdf`：第8、11、40、44、51、57頁。板載CPLD產生1 kHz同步；J7 pin 2用於探測同步；TP18/TP20為CPLD同步/TR_EN測試點。

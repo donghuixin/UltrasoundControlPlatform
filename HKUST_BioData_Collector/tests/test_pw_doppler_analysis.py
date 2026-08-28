@@ -101,6 +101,55 @@ class PwDopplerAnalysisTests(unittest.TestCase):
             self.assertTrue((output / "pw_doppler_velocity.csv").is_file())
             self.assertTrue((output / "pw_doppler_summary.json").is_file())
 
+    def test_depth_cube_automatically_localises_flow_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            capture = Path(temporary) / "capture_depth_cube"
+            capture.mkdir()
+            flow = synthetic_pulsatile_iq(4.0)[:, :2]
+            depths_mm = np.arange(21.0, 29.1, 0.5)
+            generator = np.random.default_rng(31)
+            iq = 0.025 * (
+                generator.normal(size=(flow.shape[0], depths_mm.size, 2))
+                + 1j * generator.normal(size=(flow.shape[0], depths_mm.size, 2))
+            )
+            reference = 0.025 * (
+                generator.normal(size=iq.shape) + 1j * generator.normal(size=iq.shape)
+            )
+            gate = np.abs(depths_mm - 25.0) <= 0.75
+            iq[:, gate, :] += flow[:, None, :]
+            np.savez_compressed(
+                capture / "pw_doppler_input_iq.npz",
+                iq=iq.astype(np.complex64),
+                reference_iq=reference.astype(np.complex64),
+                depths_mm=depths_mm,
+                pulse_index=np.arange(iq.shape[0]),
+                prf_hz=np.asarray([1000.0]),
+            )
+            plan = {
+                "configuration": {
+                    "center_frequency_mhz": 1.5,
+                    "prf_hz": 1000.0,
+                    "steering_angle_deg": 0.0,
+                    "flow_angle_deg": 60.0,
+                    "target_depth_mm": 25.0,
+                    "gate_length_mm": 2.0,
+                    "wall_filter_hz": 30.0,
+                    "expected_heart_rate_bpm": 72.0,
+                    "ensemble_pulses": 128,
+                    "sound_speed_m_s": 1540.0,
+                    "search_depth_min_mm": 21.0,
+                    "search_depth_max_mm": 29.0,
+                }
+            }
+            (capture / "doppler_session_plan.json").write_text(
+                json.dumps(plan), encoding="utf-8"
+            )
+            summary = analyze_capture(capture, force=True)
+            detection = summary["result"]["flow_detection"]
+            self.assertTrue(detection["accepted_blood_flow"])
+            self.assertAlmostEqual(detection["selected_gate"]["center_mm"], 25.0, delta=0.75)
+            self.assertEqual(summary["event_diagnostics"]["continuity"]["gap_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

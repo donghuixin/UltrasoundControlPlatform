@@ -1,0 +1,53 @@
+{
+  "purpose": "Four-channel oscilloscope-first CW Doppler capture",
+  "scope": "Rigol MSO8304A",
+  "tx7316_5lvl": {
+    "cw_tx_output": "J7 pin 11 / B1",
+    "rx_element_inputs": [
+      "J7 pin 3 / A1",
+      "J7 pin 4 / A2",
+      "J7 pin 5 / A3"
+    ],
+    "protected_rx_outputs": [
+      "J5 pin 3 / RX_A1",
+      "J5 pin 4 / RX_A2",
+      "J5 pin 5 / RX_A3"
+    ],
+    "cw_supply_start": "+5 V and -5 V on J1, 500 mA limit per supply",
+    "receive_switch_state": "TR_SW_DIS_A1/A2/A3 clear"
+  },
+  "channels": {
+    "CH1": "RX element 1 after identical receive conditioning",
+    "CH2": "RX element 2 after identical receive conditioning",
+    "CH3": "RX element 3 after identical receive conditioning",
+    "CH4": "Isolated/attenuated actual TX reference"
+  },
+  "acquisition": {
+    "mode": "Normal/Sample",
+    "sample_rate_sps": 25000000,
+    "memory_points_per_channel_requested": 125000000,
+    "expected_seconds_if_125m_per_channel": 5.0,
+    "averaging": false,
+    "peak_detect": false,
+    "roll": false,
+    "rx_bandwidth_limit_hz": 20000000,
+    "trigger_source": "CH4",
+    "trigger_type": "Edge",
+    "trigger_level": "approximately 50% of CH4 swing",
+    "run_mode": "Single",
+    "pretrigger_percent": 5
+  },
+  "save": {
+    "format": "BIN",
+    "range": "Memory / Full Memory / All Points",
+    "also_save": [
+      "scope setup",
+      "screenshot",
+      "experiment metadata"
+    ]
+  },
+  "safety": {
+    "ordinary_ground_probe_on_tx_output": false,
+    "tx_reference_method": "rated differential HV probe or isolated/attenuated monitor"
+  }
+}

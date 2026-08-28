@@ -1,5 +1,7 @@
 # 2026-08-04—2026-08-05 兩日更新總交接
 
+> **2026-08-21更正：** 本文的`I1,Q1,...,I8,Q8`與有限DDR秒數是當時尚未由TI閉環的direct-I/Q目標，不適用於新交付的`60 MHz + PLL40x + Demod + Dec=32`模式。TI確認該模式輸出8條unseparated raw lanes、只有1-based lane 1與5 active，單塊約0.559秒；必須先用TI separator取得每個`ChN_I/Q`。相關capture/preview程式在完成新格式整合前只保留作舊原型，不得用於本次raw-lane資料。最新流程見[Dec=32 raw-lane SOP](24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)。
+
 更新日期：2026-08-05
 
 適用平台：TX7316EVM + AFE58JD48EVM + TSW14J50 + HSDC Pro 5.31

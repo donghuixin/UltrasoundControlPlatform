@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import math
@@ -26,6 +26,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import ndimage, signal
+
+from blood_flow_detection import (
+    FlowDetectionConfig,
+    assess_fixed_gate,
+    demodulate_range_grid,
+    locate_blood_flow_gate,
+    select_longest_contiguous_run,
+)
 
 
 CHANNELS_IN_RAW_FILE = 16
@@ -46,6 +54,11 @@ class AnalysisConfig:
     expected_heart_rate_bpm: float
     sound_speed_m_s: float = 1540.0
     range_zero_offset_us: float = 0.0
+    auto_locate_flow: bool = True
+    search_depth_min_mm: float | None = None
+    search_depth_max_mm: float | None = None
+    flow_max_hz: float | None = None
+    comb_base_hz: float | None = None
 
     def validate(self) -> None:
         if self.sample_rate_hz <= 0 or self.prf_hz <= 0:
@@ -62,6 +75,20 @@ class AnalysisConfig:
             raise ValueError("Doppler ensemble must contain at least 16 pulses.")
         if not 20 <= self.expected_heart_rate_bpm <= 240:
             raise ValueError("Expected heart rate must be between 20 and 240 BPM.")
+        if self.search_depth_min_mm is not None and self.search_depth_min_mm <= 0:
+            raise ValueError("Minimum search depth must be positive.")
+        if self.search_depth_max_mm is not None and self.search_depth_max_mm <= 0:
+            raise ValueError("Maximum search depth must be positive.")
+        if (
+            self.search_depth_min_mm is not None
+            and self.search_depth_max_mm is not None
+            and self.search_depth_max_mm <= self.search_depth_min_mm
+        ):
+            raise ValueError("Maximum search depth must exceed minimum search depth.")
+        if self.flow_max_hz is not None and not self.wall_filter_hz < self.flow_max_hz < self.prf_hz / 2:
+            raise ValueError("Flow-band maximum must lie between the wall filter and PRF/2.")
+        if self.comb_base_hz is not None and self.comb_base_hz <= 0:
+            raise ValueError("Comb base frequency must be positive when supplied.")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -123,6 +150,23 @@ def config_from_capture(capture_dir: Path) -> tuple[AnalysisConfig, dict[str, An
             _value(plan_config, "sound_speed_m_s", arguments.get("sound_speed_m_s", 1540.0))
         ),
         range_zero_offset_us=float(_value(plan_config, "range_zero_offset_us", 0.0)),
+        auto_locate_flow=bool(_value(plan_config, "auto_locate_flow", True)),
+        search_depth_min_mm=(
+            None
+            if plan_config.get("search_depth_min_mm") is None
+            else float(plan_config["search_depth_min_mm"])
+        ),
+        search_depth_max_mm=(
+            None
+            if plan_config.get("search_depth_max_mm") is None
+            else float(plan_config["search_depth_max_mm"])
+        ),
+        flow_max_hz=(
+            None if plan_config.get("flow_max_hz") is None else float(plan_config["flow_max_hz"])
+        ),
+        comb_base_hz=(
+            None if plan_config.get("comb_base_hz") is None else float(plan_config["comb_base_hz"])
+        ),
     )
     config.validate()
     return config, manifest, plan
@@ -337,6 +381,35 @@ def wall_filter(iq: np.ndarray, prf_hz: float, cutoff_hz: float) -> np.ndarray:
     return signal.sosfiltfilt(sos, iq).astype(np.complex64)
 
 
+def flow_locator_config(config: AnalysisConfig) -> FlowDetectionConfig:
+    flow_max_hz = (
+        min(3500.0, 0.45 * config.prf_hz)
+        if config.flow_max_hz is None
+        else config.flow_max_hz
+    )
+    return FlowDetectionConfig(
+        wall_filter_hz=config.wall_filter_hz,
+        flow_max_hz=flow_max_hz,
+        sample_volume_mm=config.gate_length_mm,
+        welch_pulses=max(128, min(2048, config.ensemble_pulses * 4)),
+        comb_base_hz=config.comb_base_hz,
+    )
+
+
+def search_depth_axis(config: AnalysisConfig) -> np.ndarray:
+    minimum = (
+        max(0.5, config.target_depth_mm - 5.0)
+        if config.search_depth_min_mm is None
+        else config.search_depth_min_mm
+    )
+    maximum = (
+        config.target_depth_mm + 5.0
+        if config.search_depth_max_mm is None
+        else config.search_depth_max_mm
+    )
+    return np.arange(minimum, maximum + 0.125, 0.25, dtype=np.float64)
+
+
 def estimate_cardiac_period(
     time_s: np.ndarray,
     velocity_envelope_m_s: np.ndarray,
@@ -496,7 +569,19 @@ def render_result(result: dict[str, Any], target: Path, title: str) -> None:
         note = f"Cardiac modulation accepted: {cardiac['heart_rate_bpm']:.1f} BPM, {cardiac['cycles_in_spectrogram']:.1f} cycles"
     else:
         note = f"Cardiac modulation NOT accepted: {cardiac.get('reason', 'insufficient evidence')}"
-    figure.text(0.012, 0.01, note + " · velocity direction sign requires a known-flow calibration", fontsize=9, color="#38516C")
+    detection = result.get("flow_detection", {})
+    flow_note = {
+        "accepted_against_static_reference": "flow evidence passed the supplied static reference",
+        "signal_candidate_needs_static_reference": "flow candidate only; static reference still required",
+        "rejected": "flow-quality gates rejected this range gate",
+    }.get(detection.get("classification"), "flow localisation not available")
+    figure.text(
+        0.012,
+        0.01,
+        note + " · " + flow_note + " · velocity direction sign requires a known-flow calibration",
+        fontsize=9,
+        color="#38516C",
+    )
     figure.savefig(target, dpi=160, facecolor="white")
     plt.close(figure)
 
@@ -544,6 +629,7 @@ def save_outputs(
             "peak_velocity_abs_max_m_s": float(np.max(np.abs(result["peak_velocity_m_s"]))),
             "weighted_velocity_abs_median_m_s": float(np.median(np.abs(result["weighted_velocity_m_s"]))),
             "combine_diagnostics": result["combine_diagnostics"],
+            "flow_detection": result.get("flow_detection", {}),
         },
         "outputs": {
             "spectrogram_png": "pw_doppler_spectrogram.png",
@@ -576,12 +662,95 @@ def analyze_capture(capture_dir: Path, force: bool = False) -> dict[str, Any]:
 
     iq_input = capture_dir / "pw_doppler_input_iq.npz"
     if iq_input.is_file():
-        loaded = np.load(iq_input, allow_pickle=False)
-        iq = np.asarray(loaded["iq"], dtype=np.complex64)
-        file_prf = float(np.asarray(loaded.get("prf_hz", [config.prf_hz])).ravel()[0])
+        with np.load(iq_input, allow_pickle=False) as loaded:
+            iq_input_values = np.asarray(loaded["iq"], dtype=np.complex64)
+            file_prf = float(
+                np.asarray(loaded["prf_hz"] if "prf_hz" in loaded.files else [config.prf_hz]).ravel()[0]
+            )
+            pulse_index = (
+                np.asarray(loaded["pulse_index"])
+                if "pulse_index" in loaded.files
+                else None
+            )
+            timestamp_s = None
+            for key in ("timestamp_s", "timestamps_s"):
+                if key in loaded.files:
+                    timestamp_s = np.asarray(loaded[key])
+                    break
+            depth_mm = None
+            for key in ("depth_mm", "depths_mm"):
+                if key in loaded.files:
+                    depth_mm = np.asarray(loaded[key], dtype=float).reshape(-1)
+                    break
+            reference_iq = (
+                np.asarray(loaded["reference_iq"], dtype=np.complex64)
+                if "reference_iq" in loaded.files
+                else None
+            )
         if abs(file_prf - config.prf_hz) / config.prf_hz > 0.001:
             raise ValueError("I/Q file PRF does not match the Doppler session plan.")
-        diagnostics: dict[str, Any] = {"input": "pre-extracted continuous I/Q", "pulse_count": int(iq.shape[0])}
+        continuous_iq, continuity = select_longest_contiguous_run(
+            iq_input_values,
+            file_prf,
+            pulse_index=pulse_index,
+            timestamp_s=timestamp_s,
+        )
+        locator_cfg = flow_locator_config(config)
+        if continuous_iq.ndim == 3:
+            if depth_mm is None:
+                raise ValueError(
+                    "A 3-D I/Q input must include depth_mm/depths_mm for automatic flow localisation."
+                )
+            if config.auto_locate_flow:
+                flow_detection = locate_blood_flow_gate(
+                    continuous_iq,
+                    depth_mm,
+                    config.prf_hz,
+                    config.center_frequency_hz,
+                    config=locator_cfg,
+                    reference_iq=reference_iq,
+                    sound_speed_m_s=config.sound_speed_m_s,
+                    flow_angle_deg=config.flow_angle_deg,
+                )
+                selected = flow_detection["selected_gate"]
+                depth_indices = np.asarray(selected["depth_indices"], dtype=int)
+                iq = continuous_iq[:, depth_indices, :].reshape(continuous_iq.shape[0], -1)
+                config = replace(config, target_depth_mm=float(selected["center_mm"]))
+            else:
+                depth_indices = np.flatnonzero(
+                    np.abs(depth_mm - config.target_depth_mm) <= config.gate_length_mm / 2.0
+                )
+                if not depth_indices.size:
+                    depth_indices = np.asarray([int(np.argmin(np.abs(depth_mm - config.target_depth_mm)))])
+                iq = continuous_iq[:, depth_indices, :].reshape(continuous_iq.shape[0], -1)
+                flow_detection = assess_fixed_gate(
+                    iq,
+                    config.prf_hz,
+                    config.center_frequency_hz,
+                    config=locator_cfg,
+                    target_depth_mm=config.target_depth_mm,
+                    sound_speed_m_s=config.sound_speed_m_s,
+                    flow_angle_deg=config.flow_angle_deg,
+                )
+        elif continuous_iq.ndim in (1, 2):
+            iq = continuous_iq
+            flow_detection = assess_fixed_gate(
+                iq,
+                config.prf_hz,
+                config.center_frequency_hz,
+                config=locator_cfg,
+                reference_iq=reference_iq,
+                target_depth_mm=config.target_depth_mm,
+                sound_speed_m_s=config.sound_speed_m_s,
+                flow_angle_deg=config.flow_angle_deg,
+            )
+        else:
+            raise ValueError("I/Q input must be 1-D, 2-D, or a pulses-by-depths-by-channels cube.")
+        diagnostics = {
+            "input": "pre-extracted continuous I/Q",
+            "pulse_count": int(iq.shape[0]),
+            "continuity": continuity,
+        }
         source = {
             "type": "continuous_iq_npz",
             "filename": iq_input.name,
@@ -608,15 +777,65 @@ def analyze_capture(capture_dir: Path, force: bool = False) -> dict[str, Any]:
         gate_samples = int(
             round(2.0 * config.gate_length_mm * 1e-3 / config.sound_speed_m_s * config.sample_rate_hz)
         )
+        maximum_depth_mm = (
+            float(search_depth_axis(config)[-1]) if config.auto_locate_flow else config.target_depth_mm
+        )
+        propagation_samples = int(
+            round(
+                (
+                    2.0 * maximum_depth_mm * 1e-3 / config.sound_speed_m_s
+                    + config.range_zero_offset_us * 1e-6
+                )
+                * config.sample_rate_hz
+            )
+        )
         markers, measured_prf, event_diagnostics = detect_prf_events(
             score,
             config.sample_rate_hz,
             config.prf_hz,
             propagation_samples + gate_samples + 512,
         )
-        iq, gate_diagnostics = extract_range_gate_iq(
-            data, markers, channel_indices, baseline, config
-        )
+        locator_cfg = flow_locator_config(config)
+        if config.auto_locate_flow:
+            depth_mm = search_depth_axis(config)
+            iq_grid, gate_diagnostics = demodulate_range_grid(
+                data,
+                markers,
+                channel_indices,
+                baseline,
+                config.sample_rate_hz,
+                config.center_frequency_hz,
+                depth_mm,
+                config.gate_length_mm,
+                sound_speed_m_s=config.sound_speed_m_s,
+                range_zero_offset_us=config.range_zero_offset_us,
+            )
+            flow_detection = locate_blood_flow_gate(
+                iq_grid,
+                depth_mm,
+                measured_prf,
+                config.center_frequency_hz,
+                config=locator_cfg,
+                sound_speed_m_s=config.sound_speed_m_s,
+                flow_angle_deg=config.flow_angle_deg,
+            )
+            selected = flow_detection["selected_gate"]
+            depth_indices = np.asarray(selected["depth_indices"], dtype=int)
+            iq = iq_grid[:, depth_indices, :].reshape(iq_grid.shape[0], -1)
+            config = replace(config, target_depth_mm=float(selected["center_mm"]))
+        else:
+            iq, gate_diagnostics = extract_range_gate_iq(
+                data, markers, channel_indices, baseline, config
+            )
+            flow_detection = assess_fixed_gate(
+                iq,
+                measured_prf,
+                config.center_frequency_hz,
+                config=locator_cfg,
+                target_depth_mm=config.target_depth_mm,
+                sound_speed_m_s=config.sound_speed_m_s,
+                flow_angle_deg=config.flow_angle_deg,
+            )
         diagnostics = {
             **event_diagnostics,
             **gate_diagnostics,
@@ -640,6 +859,13 @@ def analyze_capture(capture_dir: Path, force: bool = False) -> dict[str, Any]:
         expected_heart_rate_bpm=config.expected_heart_rate_bpm,
         sound_speed_m_s=config.sound_speed_m_s,
     )
+    result["flow_detection"] = flow_detection
+    if result["cardiac_cycle_visible"] and not flow_detection["blood_flow_candidate"]:
+        periodicity = dict(result["cardiac_periodicity"])
+        periodicity["periodic_trace_detected_before_flow_quality_gate"] = True
+        periodicity["reason"] = "periodicity was present, but the selected gate failed blood-flow quality checks"
+        result["cardiac_periodicity"] = periodicity
+        result["cardiac_cycle_visible"] = False
     return save_outputs(output_dir, result, config, source, diagnostics)
 
 

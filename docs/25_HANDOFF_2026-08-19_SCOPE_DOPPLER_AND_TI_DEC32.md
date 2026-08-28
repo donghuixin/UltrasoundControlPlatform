@@ -1,7 +1,11 @@
 # 2026-08-19 示波器頸動脈樣Doppler與TI Dec=32總交接
 
+> **2026-08-21更正：** TI已提供針對`60 MHz + PLL40x + Demod + Dec=32`的材料並澄清容量語義。每條HSDC lane保存`33,554,432` samples；時間窗為`33,554,432 / 60 MHz = 0.55924 s`（TI約稱0.5秒），不是本文舊模型外推的8.5–8.95秒。Demod時只有1-based lane 1、5承載尚未分離的raw data，其餘6條lane為零；每個`ChN_I/Q`經TI方法分離後約524k samples。以下硬件決策與步驟已按此更正。
+
+> **2026-08-28附件閉環：** 已收到並本機歸檔TI的`Demod_resources.zip`。附件實際是60 MSPS／PLL40x／Subclass 1／Demod／Dec=32，NCO約486.145 kHz，64條raw rows重建一條32-column的`1I,1Q,...,16I,16Q`；本包不要求替換HSDC firmware INI。郵件另提的20 MSPS／160x配置並不在ZIP內。TI提出的EXT_TRIG延時拼接只適用確定性相位鎖定重播，不能拼接非重播的PW Doppler slow time。最新總決策見[2026-08-28三板系統更正後方案](27_AFE58JD48_TSW14J50_TX7316_CORRECTED_ULTRASOUND_TEST_PLAN_2026-08-28.md)。
+
 適用平台：外部脈衝發射器/T/R + MSO8304A示波器，以及AFE58JD48EVM + TSW14J50/HSDC Pro。
-資料範圍：2026-08-15至2026-08-19的本機示波器分析、AFE Demod排查與TI技術支援進展。
+資料範圍：2026-08-15至2026-08-28的本機示波器分析、AFE Demod排查與TI技術支援進展。
 安全範圍：研究與儀器診斷；本倉庫不保存人體原始資料，也不對任何結果作臨床聲明。
 
 ## 1. 當前結論
@@ -17,14 +21,15 @@
 - 若條件式假設聲束與血流夾角59°，約72–87 cm/s，中位約78.8 cm/s；
 - 只能寫成`conditional diagnostic estimate`，不能寫成已驗證PSV；EDV仍不可報告。
 
-硬體長記錄方面，TI最新回覆確認：
+硬體Dec=32方面，TI 2026-08-21最新回覆確認：
 
-- 不能只把8個AFE通道送入DDR，DDR會接收完整16通道資料；
-- FPGA可捕獲最多`33,554,432`個HSDC樣點；
-- 完整資料可能不全部顯示在HSDC圖窗，但可以由GUI導出；
-- TI正在驗證匹配高Decimation CFG與INI，預計另行提供。
+- 本交付只適用`Decimation=32`、`60 MHz`與`PLL40x`；
+- FPGA保存8條HSDC lane各`33,554,432` samples，約0.559秒；
+- Demod時lane 1與lane 5有unseparated raw data，其餘lane為零；
+- HSDC CSV保存lane 1至8，約3 GB；
+- TI分離後每個`Ch1_I, Ch1_Q, ...`約有524k samples。
 
-因此近期最重要的下一步不是再調離線算法，而是取得並驗證TI的Dec=16/32成套配置。
+因此近期最重要的下一步不是再調離線算法，也不是把Dec=32當作長時記錄，而是按已歸檔附件先在486.145-kHz低壓tone上閉環raw-lane佔用、sync、16通道I/Q分離和方向，再把NCO／filter調到探頭的實測中心頻率。要覆蓋多心動週期仍需自訂FPGA/firmware的range-gated slow-time I/Q或可靠串流。
 
 ## 2. 進展時間線
 
@@ -63,6 +68,14 @@
 - 約27%的事件需要±1個sample細對齊。
 
 這批資料證明提高CH1顯示/接收係數確實能增加可見細節，但同時更清楚地暴露了長振鈴、削頂和量化限制。
+
+### 2.5 0821：TI Dec=32、40x Demod資料格式澄清
+
+- `33,554,432`的單位是每條HSDC lane output的samples，不是已分離物理通道I/Q的長度；
+- capture的時間basis仍為60 MHz，因此完整時間資訊約0.559秒；
+- 8條lane都寫入CSV，但只有1-based lane 1、5承載raw data；
+- `Ch1_I, Ch1_Q, ...`必須經TI提供的frame-assembly/separation流程取得，每個component約524k samples；
+- 先前8.5–8.95秒容量外推作廢，標準HSDC Dec=32不再承擔多心動週期任務。
 
 ## 3. 最新血管壁與脈搏結果
 
@@ -183,36 +196,51 @@ TI正在驗證滿足本項目的AFE CFG和HSDC INI。支援工程師同時確認
 
 公開倉庫只記錄以上去識別化技術結論，不保存私人郵件地址、原始附件或私有寄存器內容。
 
-## 8. 8.5秒容量重新核算
+### 7.4 TI 2026-08-21的Dec=32、40x Demod澄清
 
-TSW14J50公開規格為4-Gbit DDR3，即512 MiB，最多256M個16-bit words。HSDC Pro的Capture Option使用`samples per channel`，而Analysis Window可以比完整捕獲短。
+本次回覆把先前不確定的容量與packing語義閉環：
 
-基於目前Dec=4捕獲的4個60-MSPS transport columns：
+- use case固定為60 MHz、Decimation=32與PLL40x；
+- 8條HSDC lane各保存33,554,432 lane-output samples；
+- 40x Demod時只有1-based lane 1、5有unseparated raw data，其他lane為零；
+- 分離後每個物理通道的I與Q約有524k samples；
+- 完整HSDC CSV包含lane 1至8，約3 GB。
+
+2026-08-28收到的附件進一步確認：script從HSDC CSV的1-based columns 1、5取數，為signed codes加32768，從row 1000後搜尋`[42866,32768,42866,32768]`，並以64條serialized rows重建一條32-column的`1I,1Q,...,16I,16Q`。理論最大為524,288完整frames，但實際會因sync前資料與尾部不足64 rows而少一些。原始TI script、mapping、CFG、PPTX與filter只保存在本機私有歸檔，公開倉庫保存hash與去識別化結論。
+
+## 8. Dec=32容量更正
+
+舊模型把Decimation理解成以`60 MHz / 32`時鐘直接把已分離I/Q寫入DDR，因此外推8.95秒。TI明確否定這個模型：Decimation涉及時域重複與data compression，不是單純把capture lane clock除以32。
+
+本模式的時間核算為：
 
 ```text
-Dec=4 word rate = 4 * 60M = 240M word/s
-Dec=32相對Dec=4再降低8倍
-Dec=32 word rate ~= 30M word/s = 60 MB/s
-duration = 256M word / 30M word/s = 8.95 s
+samples per HSDC lane = 33,554,432
+lane sample basis      = 60,000,000 samples/s
+duration               = 33,554,432 / 60,000,000
+                       = 0.559240533 s
 ```
 
-所以`8.5 s`仍是合理保守目標；只是原因不再是「只保存8個AFE通道」，而是TI驗證的DDC/Decimation/compression transport降低了總word rate。`33,554,432`的每logical-channel定義和最終column數仍需TI在交付INI時確認。
+若raw BIN按8 lanes、16-bit/lane sample保存，完整payload正好約512 MiB；CSV文字化後約3 GB。lane 1、5之外的零資料仍佔HSDC導出格式與DDR深度，不能把它們從時間計算中刪掉。
+
+因此Dec=32標準HSDC只提供約0.56秒短塊，通常不足一個完整心動週期。多個block之間存在arm/read/save空檔，不能拼成連續心動資料。
 
 ## 9. 下一步嚴格順序
 
-1. **等待TI成套檔案**：不手改現有20x/40x Demod INI。
-2. **附件歸檔和雜湊**：保存CFG、INI、firmware名稱、版本與SHA-256，不提交私有內容。
-3. **16個唯一碼Gate**：先65,536 samples，不接高壓。
-4. **2-MHz NCO已知tone Gate**：1.95/2.00/2.05 MHz確認I/Q與正負頻率。
-5. **Dec=16 Gate**：驗證channel map、I/Q、sample rate、FIR delay和完整導出。
-6. **Dec=32 Gate**：重複全部數字驗收，不因Dec=16通過而省略。
-7. **捕獲深度Gate**：依次1M、8M、33.55M samples/channel，核對bytes、rows和秒數。
-8. **已知深度反射體**：校正Dec=32 group delay與depth zero。
-9. **零流/正流/反流仿體**：驗證方向性、速度比例和零流noise floor。
-10. **8.5秒多周期仿體記錄**：中心range gate、50/100-Hz wall-filter對照，通過有效性Gate後才計算PSV/EDV。
-11. **30秒以上需求**：轉入FPGA range-gated slow-time I/Q，不再增加HSDC完整transport capture。
+1. **附件歸檔已完成**：ZIP及5個附件已保存原始檔名、bytes與SHA-256；公開倉庫只提交redacted manifest。
+2. **先原封不動執行Readme**：固定60 MHz、PLL40x、Dec=32與約486.145-kHz NCO，記錄GUI/HSDC版本、初始化順序與全部readback；本包不替換HSDC INI。
+3. **隔離執行separator副本**：不修改歸檔原件，保留原始CSV、sync rows、完整64-row frame數與32-column shape報告。
+4. **No-Demod 16唯一碼Gate**：用已修復raw-RF profile證明16/16 converter身份，先65,536 samples，不接高壓。
+5. **Demod lane佔用Gate**：證明1-based lane 1、5 active，lane 2–4與6–8為TI預期zero/padding；raw檔標記為unseparated。
+6. **TI separator Gate**：保存script hash和命令，核對16組`ChN_I/Q`、各約524k samples、無missing/duplicate。
+7. **NCO已知tone Gate**：以配置實際NCO的`f_NCO ± 50 kHz`確認I/Q配對、正負頻率和通道身份，不預設NCO一定為2 MHz。
+8. **捕獲深度Gate**：依次1M、8M、33.55M samples/lane，核對raw bytes、CSV rows、lane佔用、separator shape和0.559秒時間窗。
+9. **已知深度反射體**：校正Dec=32 group delay、first-valid-sample與depth zero。
+10. **短塊零流/正流/反流仿體**：驗證方向性、速度比例和零流noise floor；只報短時表觀速度。
+11. **確定性trigger拼接只作台架診斷**：相鄰窗保留overlap並核對I/Q相位；不把它用於脈動流或活體連續記錄。
+12. **多心動週期需求**：立即轉入FPGA range-gated slow-time I/Q或可靠串流，目標單一連續記錄至少3個周期；不再嘗試用標準HSDC Dec=32堆長度。
 
-完整逐步操作見[Dec=32長時PW Doppler SOP](24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)。
+完整逐步操作見[Dec=32 raw-lane短塊與PW Doppler SOP](24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)。
 
 ## 10. 交接給下一位操作者的停止條件
 
@@ -221,7 +249,9 @@ duration = 256M word / 30M word/s = 8.95 s
 - TX pattern、CW或高壓狀態讀回不符合預期；
 - FPGA firmware version為`0.0`；
 - JESD link/DDR狀態異常；
-- 16個唯一碼有duplicate、missing或不穩定；
+- No-Demod 16個唯一碼有duplicate、missing或不穩定；
+- Demod lane 1或lane 5無資料，或其餘lane不符合TI定義的zero/padding；
+- TI separator未提供、雜湊不明、輸出不是完整16組I/Q，或shape無法解釋；
 - I/Q正負tone方向不一致；
 - 完整capture的中間或尾部有重複/缺失；
 - AFE、示波器或ADC發生削頂；
@@ -269,8 +299,12 @@ estimate_30v_conditional_psv.py
 | 是否提高PRF | 暫不；10 kHz已足夠，目前不是alias限制 |
 | 是否用PRF差分直接算血流 | 否，只作運動/變化輔助圖 |
 | 是否可以只存8個AFE通道 | 否，TI確認DDR接收16通道 |
-| Dec=32是否仍可能錄8.5秒 | 是，理論約8.95秒，但須TI profile與實測確認 |
-| 何時轉自訂FPGA | 有效有限block通過後，若需要30秒以上再做range-gated slow-time I/Q |
+| Dec=32是否仍可能錄8.5秒 | 否；TI確認標準block約0.559秒，舊8.95秒模型作廢 |
+| lane 2–4、6–8為零是否故障 | 在40x Demod且lane 1、5正常時不是；這是TI指定packing |
+| HSDC檔是否可直接當16通道I/Q | 否；它是unseparated raw lanes，必須經TI script |
+| 是否可用20 MSPS取得1.5秒 | 容量理論可行：完整約1.6777秒；但必須由TI提供匹配PLL/clock/CFG/INI/RBF與separator，不能修改60 MHz／40x包 |
+| 是否用EXT_TRIG拼接5–10秒 | 只可拼確定性相位鎖定重播；非重播PW slow-time不可以 |
+| 何時轉自訂FPGA | 短塊separator/方向性Gate通過後；任何多心動週期或≥3秒需求都轉range-gated slow-time I/Q |
 
 ## 13. 公開參考
 

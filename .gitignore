@@ -34,3 +34,8 @@ Thumbs.db
 .DS_Store
 .idea/
 .vscode/
+
+# TI selective-disclosure support packets stay in the local private archive.
+TI_Support_Materials/
+**/Demod_resources.zip
+**/Demod_resources/

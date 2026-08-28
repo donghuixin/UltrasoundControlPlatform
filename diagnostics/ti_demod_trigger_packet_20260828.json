@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "archived_date": "2026-08-28",
+  "source": "TI technical support reply and Demod_resources.zip",
+  "handling": {
+    "raw_vendor_files_committed": false,
+    "reason": "TI selective-disclosure support material; publish only hashes, derived facts, and redacted procedures",
+    "local_archive_relative_to_workspace": "TI_Support_Materials/2026-08-28_demod_trigger_stitching"
+  },
+  "archive": {
+    "name": "Demod_resources.zip",
+    "bytes": 292846,
+    "sha256": "EE07BCB2014D6558E41CAB15A822DA314163CD5626FD047AA8746EA37D680B9E"
+  },
+  "files": [
+    {
+      "name": "Data_logic.txt",
+      "bytes": 32874,
+      "sha256": "5959EEDAEE595515C94539B16250B79333A3988CC70D9F7958DAF93E9BDED7F6"
+    },
+    {
+      "name": "Data_separation_logic_40x_M_32.py",
+      "bytes": 7238,
+      "sha256": "E3C908556450F169E757B02F8F5498DFA99B2AE5093FD841388904572E3105C3"
+    },
+    {
+      "name": "Filter Coefficient M=32.txt",
+      "bytes": 2102,
+      "sha256": "62EA9E20BE3707128411446C7F46C96316AD5C8C0E376F3023225AEFBE40A400"
+    },
+    {
+      "name": "JESD 60MSPS_Subclass1_8L_40x_demod.CFG",
+      "bytes": 4971,
+      "sha256": "5489B50AB652B81E811281E3853CB80A2C6AF7B9949AB981EB5013045A7AF8AB"
+    },
+    {
+      "name": "Readme.pptx",
+      "bytes": 313991,
+      "sha256": "0E3541EC7EB5DA0F9A1EA73BC7666F1E958D36731A9975D7B68CA785DE293253"
+    }
+  ],
+  "derived_configuration": {
+    "adc_sample_rate_hz": 60000000,
+    "jesd_subclass": 1,
+    "lane_count": 8,
+    "pll_mode": "40x",
+    "demod_enabled": true,
+    "decimation": 32,
+    "compression_factor": 3,
+    "nco_hz_approx": 486145,
+    "complex_rate_per_channel_sps": 1875000,
+    "hsdc_firmware_ini_replacement_required": false
+  },
+  "derived_serialization": {
+    "active_hsdc_columns_1_based": [1, 5],
+    "inactive_display_code": 32768,
+    "raw_sync_register_hex": "0x2772",
+    "raw_sync_decimal": 10098,
+    "offset_sync_sequence": [42866, 32768, 42866, 32768],
+    "search_starts_after_raw_row": 1000,
+    "raw_rows_per_separated_row": 64,
+    "separated_column_order": "1I,1Q,...,16I,16Q",
+    "separated_column_count": 32
+  },
+  "capacity": {
+    "maximum_samples_per_raw_lane": 33554432,
+    "raw_lane_time_basis_hz": 60000000,
+    "maximum_block_seconds": 0.5592405333333333,
+    "theoretical_complete_frames_before_sync_or_tail_crop": 524288
+  },
+  "trigger_guidance": {
+    "external_trigger_starts_one_ddr_block": true,
+    "stitching_allowed_for": [
+      "phase-locked deterministic function-generator replay",
+      "repeatable digital pattern",
+      "fixed-phantom capture-alignment diagnostics with overlap"
+    ],
+    "stitching_rejected_for": [
+      "non-repeatable pulsatile flow",
+      "live PW Doppler slow-time reconstruction",
+      "multi-heart-cycle PSV or EDV claims"
+    ]
+  },
+  "twenty_msps_status": {
+    "suggested_in_email": true,
+    "pll_mode_suggested": "160x",
+    "configuration_present_in_archive": false,
+    "theoretical_seconds_at_maximum_depth": 1.6777216,
+    "decision": "vendor-dependent secondary candidate; do not modify the supplied 60-MHz/40x package"
+  }
+}

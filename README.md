@@ -38,8 +38,10 @@
 23. [2026-08-03 TI AFE58JD48 通道複製修復包](docs/20_TI_AFE58JD48_CHANNEL_COPY_FIX_2026-08-03.md)
 24. [2026-08-04—05 CW/IQ、採集與成像兩日總交接](docs/21_HANDOFF_2026-08-05_TWO_DAY_UPDATE_CW_IQ_CAPTURE_AND_IMAGING.md)
 25. [2026-08-07 AFE Demod Import與長時多普勒交接](docs/22_HANDOFF_2026-08-07_AFE_DEMOD_IMPORT_AND_LONG_DOPPLER.md)
-26. [AFE58JD48 + TSW14J50 Dec=32長時PW Doppler完整SOP](docs/24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)
-27. [2026-08-19示波器Doppler與TI Dec=32總交接](docs/25_HANDOFF_2026-08-19_SCOPE_DOPPLER_AND_TI_DEC32.md)
+26. [AFE58JD48 + TSW14J50 Dec=32 raw-lane短塊與PW Doppler SOP（2026-08-28修訂）](docs/24_AFE58JD48_TSW14J50_DEC32_LONG_PW_DOPPLER_SOP_2026-08-19.md)
+27. [示波器Doppler與TI Dec=32總交接（2026-08-28附件閉環）](docs/25_HANDOFF_2026-08-19_SCOPE_DOPPLER_AND_TI_DEC32.md)
+28. [AFE58JD48 + TSW14J50 20 MSPS／1.5秒候選方案](docs/26_AFE58JD48_20MSPS_1P5S_PLAN_2026-08-27.md)
+29. [AFE58JD48 + TSW14J50 + TX7316更正後的超聲測試總方案](docs/27_AFE58JD48_TSW14J50_TX7316_CORRECTED_ULTRASOUND_TEST_PLAN_2026-08-28.md)
 
 ## 目前硬件基線
 
@@ -79,6 +81,10 @@ HKUST_BioData_Collector\Run_HKUST_BioData_Collector_as_admin.cmd
 
 - [AFE58JD48_120M_8L_M16_FIXED.ini](configs/hsdc/AFE58JD48_120M_8L_M16_FIXED.ini) 與 S2 版本只保留作實驗／觸發對照；normal raw-RF 現以 TI 2026-08-03 提供的 `JESD 120MSPS_Subclass1_8L.CFG` + `AFE58JD48_Custom_PLL_MODE_40x_No Demod_SubClass1` 為基線。
 - 2026-07-25 舊 profile 曾穩定出現 `3=5、4=6、9=15、10=16`。2026-08-04 的 `Test00804.bin` 未再看到該 bit-exact copy signature，但仍應用 16 個 distinct digital codes 完成最終 16/16 acceptance；Demod/IQ profile 必須另外重跑 Gate。詳見 [修復包](docs/20_TI_AFE58JD48_CHANNEL_COPY_FIX_2026-08-03.md)與[最新交接](docs/21_HANDOFF_2026-08-05_TWO_DAY_UPDATE_CW_IQ_CAPTURE_AND_IMAGING.md)。
+- TI 2026-08-21確認`60 MHz + PLL40x + Demod + Dec=32`是8條unseparated raw lanes的約0.559秒短塊：只有1-based lane 1、5 active，其餘lane為預期zero/padding；經TI方法分離後每個`ChN_I/Q`約524k samples。不能再按`60/32`外推8.5–8.95秒，也不能把raw BIN直接當`I1,Q1,...,I8,Q8`分析。多心動週期仍需自訂FPGA range-gated slow-time I/Q。
+- 20 MSPS可把理論raw-lane時間窗提高到1.6777秒，但現有60 MHz／PLL40x交付不能直接修改；需要TI提供或確認匹配的clock、PLL、CFG、INI、RBF、lane mapping與separator。詳見[20 MSPS／1.5秒候選方案](docs/26_AFE58JD48_20MSPS_1P5S_PLAN_2026-08-27.md)。
+- TI 2026-08-28附件已在本機私有歸檔並核對雜湊：實際基線NCO約486.145 kHz、64條raw rows重建一條16通道I/Q row，且本包不替換HSDC INI。EXT_TRIG延時拼接只適用確定性相位鎖定重播，不可拼接非重播PW slow time。三板系統的最新優先級與逐Gate流程見[更正後總方案](docs/27_AFE58JD48_TSW14J50_TX7316_CORRECTED_ULTRASOUND_TEST_PLAN_2026-08-28.md)。
+- `automation/hsdc_iq_capture.py`與`HKUST_BioData_Collector/cw_iq_analysis.py`仍是舊direct-I/Q layout原型；在TI separator與新manifest schema接入並通過fixture前，禁止用它們分析本次Dec=32 raw-lane檔。
 - TX7316 1 MHz preset 位於 [1MHz_5pulses.cfg](configs/tx7316/1MHz_5pulses.cfg)。自動採集現已支持1、1.5、2、2.5、4 MHz白名單pattern寫入與寄存器回讀；回讀不匹配時Fail Closed。載入任何cfg後仍須確認`TX_BF_MODE`與CW OFF。
 - 第一次啟動 UI 會讀取 `collector_config.example.json`，退出時把本機設置寫入被 Git 忽略的 `collector_config.json`。
 
