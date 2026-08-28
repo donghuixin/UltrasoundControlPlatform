@@ -4,10 +4,7 @@
 IO_LOC "clk" E2;
 IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
 
-// S2 starts/stops transmission. Each S1 press advances one steering angle.
-IO_LOC "s1" H11;
-IO_PORT "s1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
-
+// Transmission starts automatically; S2 is an optional emergency stop/restart.
 IO_LOC "s2" H10;
 IO_PORT "s2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
 
@@ -32,8 +29,8 @@ IO_PORT "sync_prf_j11" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 IO_LOC "sync_prf_j10" J10;
 IO_PORT "sync_prf_j10" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 
-// HV7350 CH1..CH8 logic inputs. PIN1..PIN8 pulse; NIN1..NIN8 are tied low by
-// the synthesized positive-unipolar-mode logic.
+// HV7350 CH1..CH8 logic inputs. PIN1..PIN8 carry the positive main burst;
+// NIN1..NIN8 carry the mutually exclusive 100 ns negative damping tail.
 IO_LOC "tx1_pin_b2" B2;
 IO_PORT "tx1_pin_b2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=8 BANK_VCCIO=3.3;
 IO_LOC "tx1_nin_f2" F2;

@@ -2,35 +2,28 @@
 
 ## Current FPGA Behavior
 
-- The FPGA starts disabled. READY, DONE, J11, J10, and all 16 HV7350 logic
-  outputs are low.
-- Press S2 once to turn READY on. The first steering angle is -10 degrees and
-  the FPGA keeps transmitting that same beam at 10 kHz; it does not scan
-  automatically.
-- While READY is on, each press of the board S1 button advances exactly one
-  step: -10, -8, -6, -4, -2, 0, +2, +4, +6, +8, +10, then back to -10.
-  The new angle is latched at the next J11 rising edge and remains fixed until
-  S1 is pressed again.
-- DONE alternates one second on and one second off while READY is on.
+- Transmission starts automatically as soon as FPGA configuration completes;
+  no button press is required. READY and DONE remain steadily on while output
+  is running.
+- The final build fixes the beam at 0 degrees and fixes the negative-tail delay
+  at 140 ns on every channel and every frame.
+- S1 is reserved and has no effect.
+- S2 is optional: pressing it stops all synchronization and PIN/NIN outputs;
+  pressing it again restarts with a new J11 pulse and the same fixed settings.
 - J11 is a 200 ns-wide, 10 kHz trigger. J10 and each transmit burst start
   exactly 2 us after the J11 rising edge; the remaining 1.8 us after J11 falls
-  is still part of the pretrigger delay. The first J11 pulse after S2 always
-  identifies the first -10 degree burst. Every subsequent J11 pulse identifies
-  a burst at the currently selected fixed angle.
-- Pressing S2 again turns READY off and immediately forces J11, J10, DONE, and
-  all 16 HV7350 PIN/NIN outputs low. Pressing S2 again always starts a fresh
-  sequence at -10 degrees with a new J11 trigger at 10 kHz; the previous angle
-  is not resumed.
-- The default carrier is 2.0 MHz and every burst contains exactly 2 cycles.
-- Transmission is positive-unipolar RTZ: PIN1..PIN8 generate positive pulses
-  and every NIN output is permanently low. With OEN high, PIN=NIN=0 selects the
-  HV7350 ground-return switch, so each channel alternates between +VPP and 0 V
-  without enabling its negative high-voltage switch. Set VPP to +30 V to obtain
-  a nominal +30 V/0 V output.
-- UART configuration can change carrier frequency, burst cycles, element pitch,
-  sound speed, and all eight channel delays. The host uploads all 11 scan-angle
-  profiles for the selected pitch. Frequency and cycle updates take effect
-  together at a 100 us frame boundary.
+  is still part of the pretrigger delay. The first automatic J11 pulse and all
+  subsequent J11 pulses identify fixed 0-degree bursts.
+- The carrier is fixed at 2.2 MHz and every burst contains exactly 2 cycles.
+- Each channel first transmits a positive-unipolar RTZ main burst on PINx. After
+  the fixed 140 ns delay, NINx emits one 100 ns negative damping pulse. PINx and
+  NINx are never high together, and PIN=NIN=0 selects the HV7350 ground-return
+  switch between them. With VPP=+30 V and the fixed VNN=-30 V, the sequence is
+  a +30 V/0 V main burst, a 140 ns RGND interval, one 0 V/-30 V damping
+  pulse, and then continuous RGND.
+- UART packets may update the stored steering-delay profiles, but this final
+  build ignores UART frequency and cycle fields. The carrier remains 2.2 MHz,
+  the burst remains 2 cycles, and the active profile remains 0 degrees.
 
 The built-in steering delays below assume 1.00 mm element pitch, 1540 m/s sound
 speed, and a 50 MHz FPGA clock (one tick is 20 ns):
@@ -49,7 +42,7 @@ speed, and a 50 MHz FPGA clock (one tick is 20 ns):
 | +8° | 0 | 5 | 9 | 14 | 18 | 23 | 27 | 32 |
 | +10° | 0 | 6 | 11 | 17 | 23 | 28 | 34 | 39 |
 
-These are true-time steering delays, so changing the carrier to 2.0 MHz does
+These are true-time steering delays, so changing the carrier to 2.2 MHz does
 not change the propagation delay required for a given angle. The
 table was recalculated and quantized again at 20 ns resolution; its tick values
 therefore remain the same, while the corresponding carrier phase changes.
@@ -69,8 +62,9 @@ All signals in this table are 3.3 V logic. They do not carry high voltage.
 | CH7 | F7 / `tx7_pin_f7` | H2.26 PIN7 | K8 / `tx7_nin_k8` | H2.28 NIN7 |
 | CH8 | L8 / `tx8_pin_l8` | H2.30 PIN8 | K10 / `tx8_nin_k10` | H2.32 NIN8 |
 
-NIN1..NIN8 remain physically connected as listed above, but the FPGA drives all
-eight pins permanently low in this build. PIN1..PIN8 carry the transmit burst.
+PIN1..PIN8 carry the positive main burst. NIN1..NIN8 carry only the 100 ns
+negative damping tail. The logic guarantees that PINx and NINx are not high at
+the same time.
 
 Required common control and power wiring:
 
@@ -100,13 +94,13 @@ Use a 3.3 V USB-UART adapter, not a 5 V adapter:
 Baud rate is 115200, format is 8-N-1. C3 is reserved as TX but is idle-high in
 this version; configuration is one-way and has no acknowledgement.
 
-Example for the default 2.0 MHz carrier, 1.00 mm element pitch, and 2-cycle
+Example for the fixed 2.2 MHz carrier, 1.00 mm element pitch, and 2-cycle
 burst (the script uploads all scan angles):
 
 ```bash
 python3 scripts/configure_beamformer.py \
   --port /dev/cu.usbserial-0001 \
-  --frequency-mhz 2.0 \
+  --frequency-mhz 2.2 \
   --angle-deg 10 \
   --pitch-mm 1.00 \
   --cycles 2
@@ -117,7 +111,7 @@ Inspect the calculated delays without opening a serial port:
 ```bash
 python3 scripts/configure_beamformer.py \
   --dry-run \
-  --frequency-mhz 2.0 \
+  --frequency-mhz 2.2 \
   --angle-deg 10 \
   --pitch-mm 1.00
 ```
@@ -142,12 +136,10 @@ delay[i] = raw_delay[i] - min(raw_delay)
 ```
 
 The 50 MHz FPGA clock gives 20 ns delay resolution. The 32-bit NCO provides an
-accurate average carrier frequency over the 1-4 MHz range, but an individual
-edge can move by one 20 ns clock when the requested period is not an integer
-number of clocks. At 2 MHz, 20 ns is 14.4 degrees of carrier phase, so this
-implementation is suitable for functional steering tests but is not the final
-choice for precision 2 MHz beamforming. A later hardware revision should expose
-a clean 100-200 MHz clock or a device PLL.
+accurate average 2.2 MHz carrier, but an individual edge can move by one 20 ns
+clock because the requested period is not an integer number of clocks. At
+2.2 MHz, 20 ns is 15.84 degrees of carrier phase. A later hardware revision
+should expose a clean 100-200 MHz clock or a device PLL for finer beam timing.
 
 The built-in fallback scan table assumes 1.00 mm element pitch and 1540 m/s sound
 speed. Running the configuration script replaces it with the requested
@@ -156,28 +148,27 @@ speed. Running the configuration script replaces it with the requested
 ## Bring-Up Order
 
 1. Keep HVDC+ and HVDC- off.
-2. Program the FPGA and check K9 is high, all PIN/NIN outputs are low while S2
-   is disabled, and J11/J10 are low.
-3. Press S2 once and verify that READY and J11 rise together. Verify J11 stays
-   high for 200 ns, and that J10 plus the first -10 degree burst start 2 us
-   after the J11 rising edge. J11 must repeat every 100 us. Check all 16 H2
-   logic signals and their relative delays with a logic analyzer or
-   oscilloscope. Press S1 once and verify that the next J11 selects -8 degrees,
-   then confirm that the -8 degree delay pattern remains unchanged until the
-   next S1 press.
-4. Confirm that all eight NINx signals remain low continuously. PINx should
-   contain two nominal 250 ns high-logic pulses commanding the positive output,
-   separated by nominal 250 ns return-to-zero intervals at the selected delays.
+2. Program the FPGA. READY and DONE should turn on automatically, J11 should
+   immediately produce a 200 ns pulse and repeat every 100 us, and J10 plus the
+   first 0-degree burst should start 2 us after the first J11 rising edge.
+3. Check all 16 H2 logic signals with a logic analyzer or oscilloscope before
+   enabling the high-voltage rails. PINx should contain two 2.2 MHz positive
+   RTZ cycles. After the full burst completes, NINx should start 140 ns later,
+   remain high for exactly 100 ns, and then return low. S1 must have no effect.
+4. Optionally press S2 once to confirm READY, DONE, J11, J10, PIN, and NIN all
+   stop; press it again to confirm automatic restart with the same timing.
 5. Connect the HV7350 board controls and 3.3 V logic power.
-6. Set VPP to +30 V, apply the required rails with current limiting, and inspect
-   H1 with a correctly rated high-voltage probe. The expected channel output is
-   nominally +30 V/0 V and must not contain a commanded negative level.
+6. With VPP=+30 V and VNN=-30 V, apply the required rails with current limiting
+   and inspect H1 with a correctly rated high-voltage probe. Confirm the main
+   burst is +30 V/0 V, the damping tail is one 100 ns 0 V/-30 V pulse, and the
+   output otherwise returns to RGND.
 
-The FPGA prevents the N-channel pulser FET from turning on, but it does not set
-the high-voltage amplitude: the positive level follows the external VPP rail.
-Do not omit or change the HV7350 VNN supply/decoupling merely because NIN is
-low; HV7350 specifies VNN as an operating supply. Eliminating the negative rail
-entirely requires a separately validated power circuit or a unipolar pulser.
+The FPGA controls timing only: the positive main amplitude follows VPP and the
+negative damping amplitude follows VNN. This final setting assumes VNN is fixed
+at -30 V. High-resolution measurements observed approximately -46 to -51 V
+instantaneous CH2 excursions, so VNN=-30 V must not be treated as a clamp on
+the ceramic voltage. Start with current limiting and first confirm on the logic
+pins that PIN and NIN never overlap.
 
 The selected FPGA pins overlap the dock-board SDRAM interface. This design fixes
 K9/SDRAM_CS_N high, so the onboard SDRAM is unavailable while beamforming. Do

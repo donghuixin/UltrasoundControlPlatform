@@ -105,8 +105,8 @@ def parse_args():
     parser.add_argument(
         "--frequency-mhz",
         type=float,
-        default=2.0,
-        help="Transmit carrier frequency from 1.0 to 4.0 MHz (default: 2.0)",
+        default=2.2,
+        help="Transmit carrier frequency from 1.0 to 4.0 MHz (default: 2.2)",
     )
     parser.add_argument(
         "--angle-deg",
