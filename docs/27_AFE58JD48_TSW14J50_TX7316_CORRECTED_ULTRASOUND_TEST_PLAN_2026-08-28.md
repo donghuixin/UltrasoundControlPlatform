@@ -48,7 +48,8 @@ EE07BCB2014D6558E41CAB15A822DA314163CD5626FD047AA8746EA37D680B9E
 | JESD | Subclass 1、8 lanes、PLL40x |
 | Demod / Decimation | enabled / 32 |
 | NCO | 約486.145 kHz |
-| complex rate | `60 MHz / 32 = 1.875 MSPS/channel` |
+| device名義抽取率 | `60 MHz / 32 = 1.875 MHz`，不可直接當separator輸出行率 |
+| TI separator輸出cadence | 每64條raw rows輸出1條16通道complex row，即`60 MHz / 64 = 937.5 k rows/s`（由腳本推得） |
 | HSDC active displayed lanes | 1與5（1-based） |
 | 其餘displayed lanes | code 32768，即signed zero |
 | sync | raw `0x2772 = 10098`；script加32768後搜尋`[42866,32768,42866,32768]` |
@@ -203,7 +204,7 @@ JESD frame decode + 16-channel identity map
 
 這比完整raw lane低數個數量級。每筆必須帶`pulse_index`或可恢復的連續counter；任何丟pulse、clock reset、FIFO overflow或timestamp逆序都要fail closed。至少先保留未做wall filter的range-gated I/Q，避免firmware濾波錯誤不可逆。
 
-若60M/M32 complex rate為1.875 MSPS而PRF為10 kHz，每PRI平均187.5 complex samples，不能假設每個PRI固定187或188點。優先用硬件PRF marker與相位累加器；若所有時鐘可由同一基準整數分頻，亦可評估9.375 kHz PRF，使每PRI正好200 complex samples，同時重新核算速度Nyquist。
+按TI separator的64-row frame，60M模式輸出cadence為937.5 k complex rows/s；10 kHz PRF時每PRI平均93.75 rows，不能假設每個PRI固定93或94點。優先用硬件PRF marker與相位累加器；若所有時鐘可由同一基準整數分頻，可評估9.375 kHz PRF，使每PRI正好100 rows，同時重新核算速度Nyquist。
 
 ## 7. 20 MSPS／160×候選的正確位置
 
@@ -213,7 +214,7 @@ JESD frame decode + 16-channel identity map
 33,554,432 / 20,000,000 = 1.6777216 s
 ```
 
-驗收目標可設為≥1.6秒。20M/M32的名義complex rate為625 kSPS，距離sample spacing約`1540/(2*625k)=1.232 mm`；必須重新測量filter通帶、group delay和sample-volume解析度。它可延長單塊，但不取代長時間slow-time firmware。
+驗收目標可設為≥1.6秒。`20M/32=625 kHz`只能作器件抽取名義值；TI未交付20 MHz／160x的frame mapping與separator，分離後complex row rate及距離sample spacing均不得先行假設。必須重新測量filter通帶、group delay和sample-volume解析度。它可延長單塊，但不取代長時間slow-time firmware。
 
 ## 8. 最短執行順序與停止條件
 

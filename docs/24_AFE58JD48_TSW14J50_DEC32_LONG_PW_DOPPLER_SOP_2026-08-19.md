@@ -136,7 +136,7 @@ EE07BCB2014D6558E41CAB15A822DA314163CD5626FD047AA8746EA37D680B9E
 附件閉環了以下格式：
 
 - CFG固定為60 MSPS、Subclass 1、PLL40x、Demod enabled、Dec=32、compression factor 3；
-- NCO約486.145 kHz，complex per-channel rate名義為1.875 MSPS；
+- NCO約486.145 kHz；`60 MHz / 32 = 1.875 MHz`只表示器件抽取名義率，不能直接當作TI分離CSV的行率。TI腳本每64條raw rows輸出一條`1I,1Q,...,16I,16Q`，因此分離後每通道complex row cadence由腳本推得為`60 MHz / 64 = 937.5 k rows/s`；
 - M=32 filter有32個係數，需在AFE GUI的Filter Coefficient RAM由address 0手動載入；
 - 本包不要求更換HSDC firmware INI；
 - HSDC CSV至少8 columns，TI script只取1-based columns 1與5；其餘通道的32768表示signed zero；

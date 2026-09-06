@@ -80,4 +80,6 @@ zUnambiguous = c / (2 PRF)
 
 ## F. UI現狀
 
-UI的PW Doppler頁能計算PRF/深度/速度/容量並啟動固定角度短塊採集。它不會把原板PRF改成5或20 kHz，也不會把有保存缺口的BIN宣稱為連續心動資料。完整連續模式需新增FPGA/AFE抽取資料入口後再啟用預留的HSDC streaming開關。
+UI的PW Doppler頁能計算PRF/深度/速度/容量並啟動固定角度短塊採集。它另有`TI EXT_TRIG 分塊重播 · 非連續`卡片，可按TI建議為相位鎖定、每次完全相同的測試序列規劃trigger-delay窗口，逐段保存exact-size BIN、SHA-256與manifest；詳見[TI EXT_TRIG分塊重播指南](../HKUST_BioData_Collector/TI_EXT_TRIGGER_REPLAY_GUIDE.md)。
+
+UI不會把原板PRF改成5或20 kHz，也不會把有保存缺口的BIN宣稱為連續心動資料。完整連續模式需新增FPGA/AFE抽取資料入口後再啟用真正可持續的資料流後端。

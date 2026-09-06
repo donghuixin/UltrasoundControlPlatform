@@ -61,6 +61,15 @@ from doppler_presets import (
     CAROTID_PHANTOM_PRESETS_BY_LABEL,
     DopplerPreset,
 )
+from long_capture_model import (
+    TI_CANDIDATE_RAW_LANE_RATE_HZ,
+    TI_MAX_RAW_ROWS_PER_LANE,
+    TI_VERIFIED_RAW_LANE_RATE_HZ,
+    TiReplayCaptureConfig,
+    TiReplayCaptureResult,
+    calculate_ti_replay_capture,
+    ti_replay_plan_as_dict,
+)
 from rapid_scan_model import (
     RapidScanConfig,
     build_rapid_scan_plan,
@@ -73,11 +82,13 @@ from tx_plan import TX_CYCLE_OPTIONS, TX_WAVEFORM_PRESETS, TxPlan, validate_tx_p
 APP_DIR = Path(__file__).resolve().parent
 CAPTURE_ROOT = APP_DIR.parent
 AUTOMATION_SCRIPT = CAPTURE_ROOT / "automation" / "tx7316_hsdc_batch_capture.py"
+TI_REPLAY_AUTOMATION_SCRIPT = CAPTURE_ROOT / "automation" / "hsdc_demod_replay_capture.py"
 RECONSTRUCTION_SCRIPT = CAPTURE_ROOT / "reconstruct_ultrasound.py"
 DEFAULT_AUTO_RUNS = CAPTURE_ROOT / "auto_runs"
 PYTHON27 = Path(r"C:\Python27\python.exe")
 CONFIG_PATH = APP_DIR / "collector_config.json"
 DOPPLER_GUIDE = APP_DIR / "PW_DOPPLER_OPERATION_GUIDE.md"
+TI_REPLAY_GUIDE = APP_DIR / "TI_EXT_TRIGGER_REPLAY_GUIDE.md"
 DOPPLER_ANALYSIS_SCRIPT = APP_DIR / "pw_doppler_analysis.py"
 CW_DOPPLER_GUIDE = APP_DIR / "CW_DOPPLER_OPERATION_GUIDE.md"
 CW_DOPPLER_STAGE_SCRIPT = CAPTURE_ROOT / "automation" / "stage_cw_doppler.py"
@@ -109,6 +120,10 @@ DOPPLER_CAPTURE_MODE_OPTIONS = {
     "現有可執行：HSDC原始RF單塊": RAW_RF_DDR_MODE,
     "最佳心動周期：FPGA距離門I/Q（待驗證固件）": FPGA_RANGE_GATE_IQ_MODE,
     "研究路徑：AFE Demod I/Q（待JESD解包）": AFE_DEMOD_IQ_MODE,
+}
+TI_REPLAY_RATE_OPTIONS = {
+    "60 MSPS · TI 40x/M32包（可實採）": TI_VERIFIED_RAW_LANE_RATE_HZ,
+    "20 MSPS · TI 160x建議（缺CFG，只規劃）": TI_CANDIDATE_RAW_LANE_RATE_HZ,
 }
 CW_DOPPLER_BACKEND_OPTIONS = {
     "推薦長時：AFE類比CW I/Q + 外部同步ADC": "analog-cw-external-adc",
@@ -493,6 +508,26 @@ class CollectorApp(tk.Tk):
         self.doppler_analysis_status_var = tk.StringVar(value="尚未分析PW Doppler資料。")
         self.doppler_result_var = tk.StringVar(value="速度譜會保存到 capture/analysis/pw_doppler。")
         self.doppler_result_run: Path | None = None
+
+        saved_ti_rate_label = str(
+            get("ti_replay_rate_label", "60 MSPS · TI 40x/M32包（可實採）")
+        )
+        if saved_ti_rate_label not in TI_REPLAY_RATE_OPTIONS:
+            saved_ti_rate_label = "60 MSPS · TI 40x/M32包（可實採）"
+        self.ti_replay_rate_var = tk.StringVar(value=saved_ti_rate_label)
+        self.ti_replay_duration_var = tk.StringVar(value=str(get("ti_replay_duration_s", 5.0)))
+        self.ti_replay_overlap_ms_var = tk.StringVar(value=str(get("ti_replay_overlap_ms", 50.0)))
+        self.ti_replay_samples_var = tk.StringVar(
+            value=str(get("ti_replay_samples_per_lane", TI_MAX_RAW_ROWS_PER_LANE))
+        )
+        self.ti_replay_summary_var = tk.StringVar(value="等待TI分塊計算")
+        self.ti_replay_warning_var = tk.StringVar(
+            value="僅可拼接相位鎖定、每次完全相同的重播訊號；不可用於活體或脈動流長時序列。"
+        )
+        self.ti_replay_status_var = tk.StringVar(value="尚未啟動TI EXT_TRIG分塊採集")
+        self.ti_replay_command_var = tk.StringVar(value="先更新分塊計畫。")
+        self.ti_replay_sync_confirmed_var = tk.BooleanVar(value=False)
+        self.ti_replay_not_live_confirmed_var = tk.BooleanVar(value=False)
 
         saved_cw_backend = str(
             get("cw_backend_label", "推薦長時：AFE類比CW I/Q + 外部同步ADC")
@@ -1101,7 +1136,7 @@ class CollectorApp(tk.Tk):
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_window, width=event.width))
         body.grid_columnconfigure(0, weight=3)
         body.grid_columnconfigure(1, weight=2)
-        body.grid_rowconfigure(2, weight=1)
+        body.grid_rowconfigure(3, weight=1)
 
         settings_card = self._card(body)
         settings_card._shadow_wrapper.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 12))  # type: ignore[attr-defined]
@@ -1285,8 +1320,89 @@ class CollectorApp(tk.Tk):
             bg=COLORS["surface"], fg=COLORS["muted"], justify="left", anchor="w", wraplength=530, font=("Segoe UI", 9),
         ).pack(fill="x", pady=(5, 0))
 
+        replay_card = self._card(body)
+        replay_card._shadow_wrapper.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 12))  # type: ignore[attr-defined]
+        replay_card.grid_columnconfigure(0, weight=1)
+        replay_top = tk.Frame(replay_card, bg=COLORS["surface"])
+        replay_top.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
+        ttk.Label(replay_top, text="TI EXT_TRIG 分塊重播 · 非連續", style="CardTitle.TLabel").pack(side="left")
+        self.ti_replay_progress = ttk.Progressbar(replay_top, mode="indeterminate", length=180)
+        self.ti_replay_progress.pack(side="right")
+
+        replay_fields = tk.Frame(replay_card, bg=COLORS["surface"])
+        replay_fields.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 8))
+        rate_holder = tk.Frame(replay_fields, bg=COLORS["surface"])
+        rate_holder.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        tk.Label(rate_holder, text="Raw lane rate", bg=COLORS["surface"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(0, 5))
+        rate_combo = ttk.Combobox(
+            rate_holder,
+            textvariable=self.ti_replay_rate_var,
+            values=list(TI_REPLAY_RATE_OPTIONS),
+            state="readonly",
+            width=37,
+        )
+        rate_combo.pack(fill="x")
+        rate_combo.bind("<<ComboboxSelected>>", lambda _event: self.recalculate_ti_replay(show_errors=False))
+        replay_entries = [
+            self._labeled_entry(replay_fields, "虛擬目標時長 (s)", self.ti_replay_duration_var),
+            self._labeled_entry(replay_fields, "相鄰重疊 (ms)", self.ti_replay_overlap_ms_var),
+            self._labeled_entry(replay_fields, "Raw rows/lane", self.ti_replay_samples_var),
+        ]
+        for entry in replay_entries:
+            entry.bind("<FocusOut>", lambda _event: self.recalculate_ti_replay(show_errors=False), add="+")
+
+        replay_metrics = tk.Label(
+            replay_card,
+            textvariable=self.ti_replay_summary_var,
+            bg=COLORS["surface_soft"], fg="#38516C", justify="left", anchor="nw",
+            padx=12, pady=9, wraplength=1000, font=("Cascadia Mono", 9),
+            highlightbackground=COLORS["border"], highlightthickness=1,
+        )
+        replay_metrics.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 7))
+        tk.Label(
+            replay_card,
+            textvariable=self.ti_replay_warning_var,
+            bg=COLORS["danger_soft"], fg=COLORS["danger"], justify="left", anchor="w",
+            padx=12, pady=8, wraplength=1000, font=("Segoe UI Semibold", 9),
+        ).grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 7))
+        replay_checks = tk.Frame(replay_card, bg=COLORS["surface"])
+        replay_checks.grid(row=4, column=0, sticky="ew", padx=18)
+        ttk.Checkbutton(
+            replay_checks,
+            text="輸入序列可從相同t=0重播，且訊號源、ADC時鐘與EXT_TRIG已相位鎖定",
+            variable=self.ti_replay_sync_confirmed_var,
+        ).pack(anchor="w")
+        ttk.Checkbutton(
+            replay_checks,
+            text="理解每個BIN之間有主機保存缺口，只可驗證確定性重播，不代表活體連續時間",
+            variable=self.ti_replay_not_live_confirmed_var,
+        ).pack(anchor="w")
+        tk.Label(
+            replay_card,
+            textvariable=self.ti_replay_status_var,
+            bg=COLORS["surface"], fg=COLORS["text"], anchor="w", font=("Segoe UI Semibold", 10),
+        ).grid(row=5, column=0, sticky="ew", padx=18, pady=(7, 0))
+        tk.Label(
+            replay_card,
+            textvariable=self.ti_replay_command_var,
+            bg="#F3F7FC", fg="#38516C", justify="left", anchor="nw", padx=12, pady=8,
+            wraplength=1000, font=("Cascadia Mono", 9), highlightbackground=COLORS["border"], highlightthickness=1,
+        ).grid(row=6, column=0, sticky="ew", padx=18, pady=7)
+        replay_actions = tk.Frame(replay_card, bg=COLORS["surface"])
+        replay_actions.grid(row=7, column=0, sticky="e", padx=18, pady=(0, 14))
+        ttk.Button(replay_actions, text="操作文檔", style="Secondary.TButton", command=self._open_ti_replay_guide).pack(side="left", padx=(0, 8))
+        ttk.Button(replay_actions, text="導出分塊JSON", style="Secondary.TButton", command=self.export_ti_replay_plan).pack(side="left", padx=(0, 8))
+        ttk.Button(replay_actions, text="分塊Dry run", style="Secondary.TButton", command=lambda: self.launch_ti_replay_capture(True)).pack(side="left", padx=(0, 8))
+        self.ti_replay_capture_button = ttk.Button(
+            replay_actions,
+            text="逐段觸發並保存",
+            style="Danger.TButton",
+            command=lambda: self.launch_ti_replay_capture(False),
+        )
+        self.ti_replay_capture_button.pack(side="left")
+
         launch_card = self._card(body)
-        launch_card._shadow_wrapper.grid(row=2, column=0, columnspan=2, sticky="nsew")  # type: ignore[attr-defined]
+        launch_card._shadow_wrapper.grid(row=3, column=0, columnspan=2, sticky="nsew")  # type: ignore[attr-defined]
         launch_card.grid_columnconfigure(0, weight=1)
         top = tk.Frame(launch_card, bg=COLORS["surface"])
         top.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
@@ -1322,6 +1438,7 @@ class CollectorApp(tk.Tk):
         ttk.Button(analysis_row, text="分析最新PW記錄", style="Secondary.TButton", command=self.launch_doppler_analysis).pack(side="left", padx=(8, 4), pady=9)
         ttk.Button(analysis_row, text="打開速度譜", style="Secondary.TButton", command=self._open_doppler_result).pack(side="left", padx=(4, 12), pady=9)
         self._doppler_preset_changed()
+        self.recalculate_ti_replay(show_errors=False)
 
     def _cw_frequency_changed(self) -> None:
         self.recalculate_cw_doppler(show_errors=False)
@@ -2553,6 +2670,169 @@ class CollectorApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("無法打開操作文檔", str(exc), parent=self)
 
+    def _current_ti_replay_config(self) -> TiReplayCaptureConfig:
+        return TiReplayCaptureConfig(
+            desired_span_s=float(self.ti_replay_duration_var.get()),
+            overlap_s=float(self.ti_replay_overlap_ms_var.get()) / 1000.0,
+            raw_lane_rate_hz=TI_REPLAY_RATE_OPTIONS[self.ti_replay_rate_var.get()],
+            raw_rows_per_lane=int(self.ti_replay_samples_var.get()),
+            prf_hz=float(self.doppler_prf_var.get()),
+        )
+
+    def _ti_replay_arguments(
+        self, config: TiReplayCaptureConfig, dry_run: bool
+    ) -> list[str]:
+        arguments = [
+            "--dry-run" if dry_run else "--capture",
+            "--output-root", str(Path(self.output_root_var.get()).expanduser().resolve()),
+            "--desired-span-s", f"{config.desired_span_s:.9g}",
+            "--overlap-s", f"{config.overlap_s:.9g}",
+            "--sample-rate-hz", f"{config.raw_lane_rate_hz:.9g}",
+            "--samples-per-lane", str(config.raw_rows_per_lane),
+            "--prf-hz", f"{config.prf_hz:.9g}",
+        ]
+        if not dry_run:
+            arguments.extend([
+                "--acknowledge-deterministic-replay-only",
+                "--acknowledge-phase-lock",
+            ])
+        return arguments
+
+    def recalculate_ti_replay(
+        self, show_errors: bool = True
+    ) -> tuple[TiReplayCaptureConfig, TiReplayCaptureResult] | None:
+        try:
+            config = self._current_ti_replay_config()
+            result = calculate_ti_replay_capture(config)
+            arguments = self._ti_replay_arguments(config, dry_run=False)
+        except (KeyError, ValueError, tk.TclError) as exc:
+            self.ti_replay_summary_var.set("參數無效")
+            self.ti_replay_warning_var.set(str(exc))
+            if show_errors:
+                messagebox.showerror("TI分塊參數錯誤", str(exc), parent=self)
+            return None
+
+        first_last = (
+            f"{result.trigger_offsets_s[0]:.6f} … {result.trigger_offsets_s[-1]:.6f} s"
+            if result.block_count > 1 else "0.000000 s"
+        )
+        separated_text = (
+            f"{result.separated_row_rate_hz:.1f} complex rows/s · overlap {result.overlap_separated_rows:,} rows"
+            if result.separated_row_rate_hz is not None and result.overlap_separated_rows is not None
+            else "UNKNOWN · 等待TI提供20 MSPS frame mapping/separator"
+        )
+        self.ti_replay_summary_var.set(
+            f"單塊             {result.block_duration_s:.9f} s · {result.raw_file_bytes / 1048576.0:.1f} MiB\n"
+            f"步長/重疊        {result.step_s:.9f} s / {config.overlap_s * 1000.0:.3f} ms\n"
+            f"分塊/虛擬覆蓋    {result.block_count} blocks / {result.virtual_span_s:.6f} s\n"
+            f"總原始資料       {result.total_file_bytes / 1073741824.0:.3f} GiB\n"
+            f"分離輸出         {separated_text}\n"
+            f"Trigger offsets  {first_last}"
+        )
+        prefix = "可實採" if result.capture_ready else "只可規劃"
+        self.ti_replay_warning_var.set(
+            prefix + " · " + "\n".join(f"• {warning}" for warning in result.warnings)
+        )
+        command = subprocess.list2cmdline(
+            [str(PYTHON27), str(TI_REPLAY_AUTOMATION_SCRIPT), *arguments]
+        )
+        self.ti_replay_command_var.set(command)
+        return config, result
+
+    def _ti_replay_plan(self) -> dict:
+        calculated = self.recalculate_ti_replay(show_errors=True)
+        if calculated is None:
+            raise ValueError("TI replay parameters are invalid.")
+        config, result = calculated
+        plan = ti_replay_plan_as_dict(config, result)
+        plan["source_basis"] = "TI 2026-08-28 trigger-delay stitching reply and Demod_resources package"
+        plan["software_execution"] = {
+            "automation_script": str(TI_REPLAY_AUTOMATION_SCRIPT),
+            "hsdc_state": "reconnect board and reload the operator's persisted HSDC device selection after demod setup",
+            "external_delay_control": "manual operator confirmation before each block",
+            "exact_bin_size_required": True,
+            "sha256_per_bin": True,
+        }
+        plan["operation_guide"] = str(TI_REPLAY_GUIDE)
+        return plan
+
+    def export_ti_replay_plan(self) -> None:
+        try:
+            plan = self._ti_replay_plan()
+            plan_dir = Path(self.output_root_var.get()).expanduser().resolve() / "ti_replay_plans"
+            plan_dir.mkdir(parents=True, exist_ok=True)
+            target = plan_dir / time.strftime("ti_replay_plan_%Y%m%d_%H%M%S.json")
+            target.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("無法導出TI分塊方案", str(exc), parent=self)
+            return
+        self.ti_replay_status_var.set(f"分塊JSON已保存：{target}")
+        messagebox.showinfo("TI分塊方案已保存", str(target), parent=self)
+
+    def _open_ti_replay_guide(self) -> None:
+        if not TI_REPLAY_GUIDE.exists():
+            messagebox.showerror("找不到操作文檔", str(TI_REPLAY_GUIDE), parent=self)
+            return
+        try:
+            os.startfile(TI_REPLAY_GUIDE)  # type: ignore[attr-defined]
+        except OSError as exc:
+            messagebox.showerror("無法打開操作文檔", str(exc), parent=self)
+
+    def launch_ti_replay_capture(self, dry_run: bool) -> None:
+        calculated = self.recalculate_ti_replay(show_errors=True)
+        if calculated is None:
+            return
+        config, result = calculated
+        if not PYTHON27.exists() or not TI_REPLAY_AUTOMATION_SCRIPT.exists():
+            messagebox.showerror(
+                "採集環境缺失",
+                f"找不到：\n{PYTHON27}\n或\n{TI_REPLAY_AUTOMATION_SCRIPT}",
+                parent=self,
+            )
+            return
+        if not dry_run:
+            if not result.capture_ready:
+                messagebox.showwarning(
+                    "此取樣率只可規劃",
+                    "TI雖建議20 MSPS / 160x，但附件沒有對應CFG、HSDC設定與分離器；不能用60 MHz配置替代。",
+                    parent=self,
+                )
+                return
+            if not all((
+                self.ti_replay_sync_confirmed_var.get(),
+                self.ti_replay_not_live_confirmed_var.get(),
+            )):
+                messagebox.showwarning(
+                    "尚未完成TI分塊確認",
+                    "請先確認可重播/相位鎖定條件，並確認理解這不是活體連續記錄。",
+                    parent=self,
+                )
+                return
+            proceed = messagebox.askyesno(
+                "開始TI EXT_TRIG分塊重播",
+                "本流程只用於低電壓、確定性輸入重播驗證：TX高壓OFF、CW OFF、TX_BF_MODE=0。\n\n"
+                "請先在AFE GUI載入TI的60 MSPS / 40x / M=32 demod配置與濾波器，"
+                "在HSDC Pro啟用Trigger mode、關閉Software Trigger並勾選Arm on next capture。\n\n"
+                f"將保存 {result.block_count} 個有限DDR塊，共約 {result.total_file_bytes / 1073741824.0:.3f} GiB。"
+                "每一塊前命令列會要求你重置相同輸入並設定EXT_TRIG delay；輸入READY後才arm。繼續嗎？",
+                parent=self,
+                icon="warning",
+            )
+            if not proceed:
+                return
+        arguments = self._ti_replay_arguments(config, dry_run=dry_run)
+        self._launch_capture_process(
+            arguments=arguments,
+            dry_run=dry_run,
+            status_var=self.ti_replay_status_var,
+            progress=self.ti_replay_progress,
+            button=self.ti_replay_capture_button,
+            title="HKUST - TI EXT_TRIG deterministic replay",
+            plan=self._ti_replay_plan(),
+            script_path=TI_REPLAY_AUTOMATION_SCRIPT,
+            command_var=self.ti_replay_command_var,
+        )
+
     def _current_cw_doppler_config(self) -> CwDopplerConfig:
         row_layout = (
             ((1, 3), 2),
@@ -3200,18 +3480,20 @@ class CollectorApp(tk.Tk):
         button: ttk.Button,
         title: str,
         plan: dict | None = None,
+        script_path: Path = AUTOMATION_SCRIPT,
+        command_var: tk.StringVar | None = None,
     ) -> None:
         if self.capture_watch is not None:
             messagebox.showwarning("採集正在進行", "已有一個採集任務正在監控，請等待其完成。", parent=self)
             return
-        if not PYTHON27.exists() or not AUTOMATION_SCRIPT.exists():
-            messagebox.showerror("採集環境缺失", f"找不到：\n{PYTHON27}\n或\n{AUTOMATION_SCRIPT}", parent=self)
+        if not PYTHON27.exists() or not script_path.exists():
+            messagebox.showerror("採集環境缺失", f"找不到：\n{PYTHON27}\n或\n{script_path}", parent=self)
             return
 
         output_root = Path(self.output_root_var.get()).expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         existing = {path.name for path in output_root.glob("capture_*")}
-        command_parts = [str(PYTHON27), str(AUTOMATION_SCRIPT), *arguments]
+        command_parts = [str(PYTHON27), str(script_path), *arguments]
         command_line = subprocess.list2cmdline(command_parts)
         console_title = f"{title} - Dry Run" if dry_run else title
         console_body = (
@@ -3221,7 +3503,9 @@ class CollectorApp(tk.Tk):
             'else '
             '(echo. & echo CAPTURE SUCCEEDED.) & pause'
         )
-        if status_var is self.doppler_status_var:
+        if command_var is not None:
+            command_var.set(command_line)
+        elif status_var is self.doppler_status_var:
             self.doppler_command_var.set(command_line)
         else:
             self.command_preview_var.set(command_line)
@@ -3439,7 +3723,10 @@ class CollectorApp(tk.Tk):
                 return
             status = manifest.get("status", "initializing")
             captures = len(manifest.get("captures", []))
-            total = len(manifest.get("array", {}).get("profiles", [])) * int(manifest.get("arguments", {}).get("repeats", 1))
+            total = int(manifest.get("planned_captures", 0)) or (
+                len(manifest.get("array", {}).get("profiles", []))
+                * int(manifest.get("arguments", {}).get("repeats", 1))
+            )
             status_var.set(f"{run.name}: {status} · files {captures}/{total or '?'}")
             if status in {"complete", "error"}:
                 progress.stop()
@@ -3849,6 +4136,10 @@ class CollectorApp(tk.Tk):
             "doppler_block_samples": self.doppler_samples_var.get(),
             "doppler_repeats": self.doppler_repeats_var.get(),
             "doppler_trigger": self.doppler_trigger_var.get(),
+            "ti_replay_rate_label": self.ti_replay_rate_var.get(),
+            "ti_replay_duration_s": self.ti_replay_duration_var.get(),
+            "ti_replay_overlap_ms": self.ti_replay_overlap_ms_var.get(),
+            "ti_replay_samples_per_lane": self.ti_replay_samples_var.get(),
             "cw_backend_label": self.cw_backend_var.get(),
             "cw_center_frequency_mhz": self.cw_frequency_var.get(),
             "cw_tx_supply_v": self.cw_tx_supply_var.get(),
@@ -3897,10 +4188,13 @@ def self_test() -> int:
     doppler = calculate_doppler(DopplerConfig())
     if not 170.0 < doppler.pulses_per_raw_block < 180.0:
         raise RuntimeError("PW Doppler timing self-test failed")
+    ti_replay = calculate_ti_replay_capture(TiReplayCaptureConfig())
+    if ti_replay.block_count != 10 or ti_replay.separated_row_rate_hz != 937_500.0:
+        raise RuntimeError("TI EXT_TRIG replay planning self-test failed")
     cw_doppler = calculate_cw_doppler(CwDopplerConfig())
     if cw_doppler.nco_word != 0x0889 or abs(cw_doppler.iq_output_rate_hz - 15_000_000.0) > 1.0:
         raise RuntimeError("CW Doppler model self-test failed")
-    missing = [path for path in (AUTOMATION_SCRIPT, RECONSTRUCTION_SCRIPT, CW_DOPPLER_STAGE_SCRIPT, CW_TX_CONTROL_SCRIPT, PYTHON27) if not path.exists()]
+    missing = [path for path in (AUTOMATION_SCRIPT, TI_REPLAY_AUTOMATION_SCRIPT, TI_REPLAY_GUIDE, RECONSTRUCTION_SCRIPT, CW_DOPPLER_STAGE_SCRIPT, CW_TX_CONTROL_SCRIPT, PYTHON27) if not path.exists()]
     print("HKUST Ultrosound collector platform self-test")
     print(f"delay profiles: {len(profiles)}")
     print(f"1-degree sweep: {len(fine_profiles)} angles / 2 hardware batches")
@@ -3913,6 +4207,7 @@ def self_test() -> int:
         f"{stock_cpld_samples:,} samples per channel"
     )
     print(f"PW Doppler default block: {doppler.block_duration_ms:.2f} ms / {doppler.pulses_per_raw_block:.1f} pulses")
+    print(f"TI replay plan: {ti_replay.block_count} blocks / {ti_replay.virtual_span_s:.3f} s virtual span")
     print(f"CW Doppler default: NCO=0x{cw_doppler.nco_word:04X} / I/Q={cw_doppler.iq_output_rate_hz / 1e6:.1f} MSPS")
     print(f"automation script: {AUTOMATION_SCRIPT}")
     print(f"reconstruction script: {RECONSTRUCTION_SCRIPT}")

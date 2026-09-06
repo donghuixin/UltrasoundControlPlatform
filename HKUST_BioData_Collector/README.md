@@ -120,6 +120,8 @@ C:\Python27\python.exe ..\automation\tx7316_hsdc_batch_capture.py --dry-run --an
 
 ## PW Doppler
 
+PW頁面新增`TI EXT_TRIG 分塊重播 · 非連續`卡片，可計算60 MSPS demod最大DDR窗、重疊、trigger offset與磁碟空間，並逐塊保存exact-size BIN、SHA-256及manifest。此功能只適用確定性相位鎖定重播，不會把多個BIN標成活體連續資料；詳見[操作指南](TI_EXT_TRIGGER_REPLAY_GUIDE.md)。
+
 UI現在包含`PW多普勒 Doppler`頁面，可計算PRF的無模糊深度、速度Nyquist、TSW總DDR分攤、單塊脈衝數、原始RF數據量、距離門I/Q數據量和預估心動周期數。現有模式會配置固定TX波束角度、採集單一連續HSDC raw-RF塊，完成後自動輸出距離門I/Q、wall filter、速度譜、速度CSV和周期可信度摘要。
 
 頁面提供五個頸動脈樣流量**仿體**預設。現有1 kHz/70 ms低速短塊可在完成Pre-flight後一鍵採集並分析；2.5/5/7.5 kHz多周期方案會一鍵載入並檢查硬件Gate，不能繞過尚未驗證的共同PRF與連續I/Q後端。配置審計可執行`python config_audit.py`。

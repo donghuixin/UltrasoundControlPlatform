@@ -111,7 +111,11 @@ except ImportError:  # Python 3 test/import compatibility; production uses Pytho
 import ctypes
 import datetime
 import hashlib
-import imp
+try:
+    import imp
+except ImportError:  # Python 3.12+ dry-run/test compatibility; production is Python 2.7.
+    imp = None
+    import importlib.util
 import json
 import math
 import os
@@ -1000,7 +1004,14 @@ class TX7316Controller(object):
     def __init__(self):
         if not os.path.isfile(TX_PYTHON_MODULE):
             raise AutomationError("TX7316 Python module not found: " + TX_PYTHON_MODULE)
-        module = imp.load_source("ti_tx7316_device_gui", TX_PYTHON_MODULE)
+        if imp is not None:
+            module = imp.load_source("ti_tx7316_device_gui", TX_PYTHON_MODULE)
+        else:
+            spec = importlib.util.spec_from_file_location(
+                "ti_tx7316_device_gui", TX_PYTHON_MODULE
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
         self.gui = None
         self.application_name = None
         failures = []
@@ -1317,7 +1328,7 @@ class HSDCController(object):
 
     def configure(
         self, samples, trigger_mode, full_setup, board_serial, device_name,
-        enable_capture_to_file_streaming=False,
+        enable_capture_to_file_streaming=False, sample_rate_hz=ADC_SAMPLE_RATE_HZ,
     ):
         timeout = ctypes.c_int32(self.timeout_ms)
         if full_setup:
@@ -1338,7 +1349,7 @@ class HSDCController(object):
         self.call("HSDC_Ready", ctypes.c_int32(max(self.timeout_ms, 120000)))
         self.call(
             "Pass_ADC_Output_Data_Rate",
-            ctypes.c_double(ADC_SAMPLE_RATE_HZ),
+            ctypes.c_double(float(sample_rate_hz)),
             timeout,
         )
         self.call(

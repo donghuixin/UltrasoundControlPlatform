@@ -48,7 +48,9 @@
     "decimation": 32,
     "compression_factor": 3,
     "nco_hz_approx": 486145,
-    "complex_rate_per_channel_sps": 1875000,
+    "nominal_device_decimation_rate_hz": 1875000,
+    "separator_output_complex_rows_per_second_inferred": 937500,
+    "separator_rate_basis": "60,000,000 raw rows/s divided by the TI separator's 64 raw rows per output row",
     "hsdc_firmware_ini_replacement_required": false
   },
   "derived_serialization": {
@@ -59,6 +61,7 @@
     "offset_sync_sequence": [42866, 32768, 42866, 32768],
     "search_starts_after_raw_row": 1000,
     "raw_rows_per_separated_row": 64,
+    "separated_complex_row_rate_hz_inferred_at_60msps": 937500,
     "separated_column_order": "1I,1Q,...,16I,16Q",
     "separated_column_count": 32
   },
