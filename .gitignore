@@ -7,6 +7,7 @@ analysis/
 **/analysis/
 *.bin
 !fpga/tang_primer_25k_hv7350/artifacts/*.bin
+!fpga/tang_primer_25k_hv7350/burn_test/pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.bin
 *.npy
 *.npz
 *.mat
@@ -35,3 +36,7 @@ Thumbs.db
 .DS_Store
 .idea/
 .vscode/
+
+# FPGA implementation output and local Gowin settings are not deliverables.
+fpga/tang_primer_25k_hv7350/impl/
+fpga/tang_primer_25k_hv7350/*.gprj.user

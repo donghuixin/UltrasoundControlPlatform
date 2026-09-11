@@ -1,46 +1,34 @@
-// Eight-channel HV7350 transmit beamformer for Tang Primer 25K.
-//
-// Control:
-// - Transmission starts automatically after FPGA configuration; READY and DONE
-//   are steady high while output is enabled. No button press is required.
-// - S1 is reserved and has no effect in this final fixed-damping build.
-// - S2 remains an optional emergency stop/restart control after a 20 ms
-//   debounce. Restart always uses the fixed 0-degree beam and 140 ns damping
-//   delay; disabling forces every synchronization and pulser output low.
-// - J11 is a short 200 ns, 10 kHz trigger. J10 and the transmit burst start
-//   exactly 2 us after the J11 rising edge.
-// - READY and DONE indicate that the automatic transmitter is running.
-// - The measured carrier and cycle count are fixed in this final build. UART
-//   packets may update stored steering profiles but cannot change carrier or
-//   cycle count.
-//
-// Each HV7350 channel first emits a positive-unipolar RTZ burst on PINx. After
-// a fixed 140 ns damping delay, NINx emits one 100 ns negative damping pulse.
-// PINx and NINx are never high together. With OEN high, PINx=NINx=0 selects the
-// HV7350 return-to-ground path. All logic outputs are low while S2 is disabled.
+// Four independent HV7350 probes, Tang Primer 25K, 50 MHz / 3.3 V I/O.
+// Power-up is silent. S2 advances HV1 -> HV2 -> HV3 -> HV4 -> HV1,
+// starting a fresh five-second, 10 kHz session on exactly one output.
+// A press during a session aborts it and starts the next probe. UART can
+// START a selected probe, NEXT, STOP, or query STATUS; see four_probe_control.md.
+// READY is high while running; DONE latches high only on normal five-second
+// completion. S1 is unused. HV5..HV8 always have PIN=NIN=0.
+// The measured waveform is unchanged: 2.2 MHz, two positive RTZ cycles,
+// 140 ns post-burst delay and one 100 ns negative damping pulse.
+// J11 is 200 ns wide and leads each burst/J10 rising edge by exactly 2 us.
 module top #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer UART_BAUD = 115_200,
     parameter integer S2_DEBOUNCE_TICKS = CLK_FREQ_HZ / 50,
+    parameter integer SESSION_TICKS = CLK_FREQ_HZ * 5,
     parameter integer PRF_PERIOD_TICKS = CLK_FREQ_HZ / 10_000,
     parameter integer PRF_HALF_TICKS = PRF_PERIOD_TICKS / 2,
     parameter integer PRETRIGGER_TICKS = CLK_FREQ_HZ / 500_000,
     parameter integer TRIGGER_PULSE_TICKS = CLK_FREQ_HZ / 5_000_000,
     parameter integer DAMP_PULSE_TICKS = CLK_FREQ_HZ / 10_000_000,
-    // round(2.2 MHz * 2^32 / 50 MHz) = 0x0B439581.
     parameter [31:0] DEFAULT_FREQ_WORD = 32'h0B439581,
     parameter [7:0] DEFAULT_BURST_CYCLES = 8'd2
 )(
-    input  wire clk,
-    input  wire s2,
-    input  wire uart_rx_b3,
+    input wire clk,
+    input wire s2,
+    input wire uart_rx_b3,
     output wire uart_tx_c3,
-
     output wire led_ready,
     output wire led_done,
     output wire sync_prf_j11,
     output wire sync_prf_j10,
-
     output wire tx1_pin_b2,
     output wire tx1_nin_f2,
     output wire tx2_pin_e1,
@@ -57,34 +45,26 @@ module top #(
     output wire tx7_nin_k8,
     output wire tx8_pin_l8,
     output wire tx8_nin_k10,
-
-    // The transmit pins share the dock-board SDRAM bus. Hold CS_N high so the
-    // SDRAM never drives its DQ pins while they are used by this design.
+    // These outputs share the dock SDRAM bus: keep its CS_N inactive.
     output wire sdram_disable_n_k9
 );
 
-localparam integer UART_CLKS_PER_BIT = CLK_FREQ_HZ / UART_BAUD;
-localparam [3:0] CALIBRATION_ANGLE_INDEX = 4'd5;
 localparam [15:0] FIXED_DAMP_DELAY_TICKS = 16'd7;
-
-assign uart_tx_c3 = 1'b1;
 assign sdram_disable_n_k9 = 1'b1;
 
-// The board S1 input is disconnected from this final top level. Synchronize
-// and debounce only the optional S2 emergency stop/restart input.
+// Synchronize and debounce both press and release. Holding S2 produces only
+// one event. "Immediate" switching means after the normal 20 ms debounce.
 reg s2_meta = 1'b0;
 reg s2_sync = 1'b0;
 reg s2_state = 1'b0;
 reg s2_state_last = 1'b0;
 reg [31:0] s2_debounce_count = 32'd0;
-
 wire s2_pressed = s2_state && !s2_state_last;
 
 always @(posedge clk) begin
     s2_meta <= s2;
     s2_sync <= s2_meta;
     s2_state_last <= s2_state;
-
     if (s2_sync == s2_state) begin
         s2_debounce_count <= 32'd0;
     end
@@ -97,416 +77,176 @@ always @(posedge clk) begin
     end
 end
 
-// Start automatically with a visible J11 trigger, then begin the first frame
-// exactly PRETRIGGER_TICKS (2 us) later. Steering is fixed at 0 degrees and the
-// measured optimum damping-tail delay is fixed at seven clocks (140 ns).
-reg output_enabled = 1'b1;
-reg scan_active = 1'b1;
-reg pretrigger_active = 1'b1;
-reg [15:0] pretrigger_count = 16'd0;
-reg [15:0] frame_count = 16'd0;
-reg [3:0] scan_angle_index = CALIBRATION_ANGLE_INDEX;
-reg [3:0] active_frame_angle_index = CALIBRATION_ANGLE_INDEX;
+wire command_valid;
+wire [7:0] command;
+wire [7:0] argument;
+wire [7:0] sequence_id;
+reg response_valid = 1'b0;
+reg response_pending = 1'b0;
+reg [7:0] response_command = 8'd0;
+reg [7:0] response_sequence = 8'd0;
+reg [7:0] response_result = 8'd0;
+reg [7:0] response_active = 8'd0;
+reg [7:0] response_next = 8'd1;
+reg [7:0] response_flags = 8'd0;
+wire response_busy;
 
-wire pretrigger_complete = scan_active && pretrigger_active &&
-                           (pretrigger_count == PRETRIGGER_TICKS - 1);
-wire prf_interval_complete = scan_active && !pretrigger_active &&
-                             (frame_count == PRF_PERIOD_TICKS - 1);
-wire scan_frame_start = pretrigger_complete || prf_interval_complete;
-wire initial_trigger_pulse = pretrigger_active &&
-                             (pretrigger_count < TRIGGER_PULSE_TICKS);
-wire frame_trigger_pulse = scan_active && !pretrigger_active &&
-                           (frame_count >=
-                            PRF_PERIOD_TICKS - PRETRIGGER_TICKS) &&
-                           (frame_count <
-                            PRF_PERIOD_TICKS - PRETRIGGER_TICKS +
-                            TRIGGER_PULSE_TICKS);
-// This edge is one clock before frame_trigger_pulse becomes visible at J11.
-wire frame_trigger_start = scan_active && !pretrigger_active &&
-                           (frame_count ==
-                            PRF_PERIOD_TICKS - PRETRIGGER_TICKS - 1);
-wire frame_start = scan_frame_start;
-wire channel_run_enable = output_enabled;
+probe_uart_control #(
+    .CLK_FREQ_HZ(CLK_FREQ_HZ), .UART_BAUD(UART_BAUD)
+) control_uart (
+    .clk(clk), .rx(uart_rx_b3), .tx(uart_tx_c3),
+    .command_valid(command_valid), .command(command),
+    .argument(argument), .sequence_id(sequence_id),
+    .response_valid(response_valid),
+    .response_command(response_command), .response_sequence(response_sequence),
+    .response_result(response_result), .response_active(response_active),
+    .response_next(response_next), .response_flags(response_flags),
+    .response_busy(response_busy)
+);
+
+wire uart_start = command_valid && (command == 8'h10) &&
+                  (argument >= 8'd1) && (argument <= 8'd4);
+wire uart_next = command_valid && (command == 8'h11) && (argument == 8'd0);
+wire uart_stop = command_valid && (command == 8'h12) && (argument == 8'd0);
+wire command_known = (command == 8'h10) || (command == 8'h11) ||
+                     (command == 8'h12) || (command == 8'h13);
+wire argument_valid = (command == 8'h10) ?
+                      ((argument >= 8'd1) && (argument <= 8'd4)) :
+                      (argument == 8'd0);
+
+// One shared pulse engine feeds a one-of-four output selector, so the four
+// probes cannot run simultaneously. Unselected PIN=NIN=0 means RTZ, NOT Hi-Z.
+reg session_active = 1'b0;
+reg session_completed = 1'b0;
+reg [1:0] selected_channel = 2'd0;
+reg [1:0] next_channel = 2'd0;
+reg [31:0] session_count = 32'd0;
+reg [15:0] frame_tick = 16'd0;
+
+// UART STOP wins over a simultaneous button event. UART START wins over NEXT.
+// The software and button share one cursor: START HV3 makes the next HV4.
+wire request_start = !uart_stop && (uart_start || uart_next || s2_pressed);
+wire [1:0] requested_channel = uart_start ?
+                              (argument[1:0] - 2'd1) : next_channel;
+// Suppress old pulses and reset the engine on every restart, including a
+// restart of the SAME channel during a burst or its negative damping tail.
+wire channel_run_enable = session_active && !request_start && !uart_stop;
+wire frame_start = channel_run_enable &&
+                   (frame_tick == PRETRIGGER_TICKS - 1);
 
 always @(posedge clk) begin
-    if (s2_pressed) begin
-        output_enabled <= !output_enabled;
-
-        // An optional S2 restart selects the fixed 0-degree beam and starts
-        // with a short J11 pulse plus a complete 2 us trigger-to-transmit
-        // delay. When READY
-        // turns off, the output masks below force J11/J10/PIN/NIN low
-        // immediately.
-        scan_active <= !output_enabled;
-        pretrigger_active <= !output_enabled;
-        pretrigger_count <= 16'd0;
-        frame_count <= 16'd0;
-        scan_angle_index <= CALIBRATION_ANGLE_INDEX;
-        active_frame_angle_index <= CALIBRATION_ANGLE_INDEX;
+    if (uart_stop) begin
+        session_active <= 1'b0;
+        session_completed <= 1'b0;
+        session_count <= 32'd0;
+        frame_tick <= 16'd0;
     end
-    else if (!output_enabled) begin
-        scan_active <= 1'b0;
-        pretrigger_active <= 1'b0;
-        pretrigger_count <= 16'd0;
-        frame_count <= 16'd0;
+    else if (request_start) begin
+        selected_channel <= requested_channel;
+        next_channel <= requested_channel + 2'd1;
+        session_active <= 1'b1;
+        session_completed <= 1'b0;
+        session_count <= 32'd0;
+        frame_tick <= 16'd0;
     end
-    else if (scan_active) begin
-        if (frame_trigger_start) begin
-            active_frame_angle_index <= CALIBRATION_ANGLE_INDEX;
-        end
-
-        if (pretrigger_active) begin
-            if (pretrigger_complete) begin
-                pretrigger_active <= 1'b0;
-                pretrigger_count <= 16'd0;
-                frame_count <= 16'd0;
-            end
-            else begin
-                pretrigger_count <= pretrigger_count + 1'b1;
-            end
-        end
-        else if (prf_interval_complete) begin
-            frame_count <= 16'd0;
+    else if (session_active) begin
+        if (session_count == SESSION_TICKS - 1) begin
+            session_active <= 1'b0;
+            session_completed <= 1'b1;
+            session_count <= 32'd0;
+            frame_tick <= 16'd0;
         end
         else begin
-            frame_count <= frame_count + 1'b1;
+            session_count <= session_count + 1'b1;
+            if (frame_tick == PRF_PERIOD_TICKS - 1)
+                frame_tick <= 16'd0;
+            else
+                frame_tick <= frame_tick + 1'b1;
         end
-
-    end
-    else begin
-        // Defensive recovery: READY can only be on in transmit mode. If state
-        // is ever lost, restart it with a new, visible J11 pretrigger.
-        scan_active <= 1'b1;
-        pretrigger_active <= 1'b1;
-        pretrigger_count <= 16'd0;
-        frame_count <= 16'd0;
-        scan_angle_index <= CALIBRATION_ANGLE_INDEX;
-        active_frame_angle_index <= CALIBRATION_ANGLE_INDEX;
     end
 end
 
-assign led_ready = output_enabled;
-assign led_done = output_enabled;
-assign sync_prf_j11 = output_enabled && scan_active &&
-                      (initial_trigger_pulse || frame_trigger_pulse);
-assign sync_prf_j10 = output_enabled && scan_active &&
-                      !pretrigger_active &&
-                      (frame_count < PRF_HALF_TICKS);
-
-// UART receiver and binary configuration parser.
-wire [7:0] uart_rx_data;
-wire uart_rx_valid;
-
-uart_rx_8n1 #(
-    .CLKS_PER_BIT(UART_CLKS_PER_BIT)
-) uart_receiver (
-    .clk(clk),
-    .rx(uart_rx_b3),
-    .data(uart_rx_data),
-    .valid(uart_rx_valid)
-);
-
-wire config_valid;
-wire angle_table_valid;
-wire [3:0] angle_table_index;
-wire [31:0] config_freq_word;
-wire [7:0] config_burst_cycles;
-wire [15:0] config_delay0;
-wire [15:0] config_delay1;
-wire [15:0] config_delay2;
-wire [15:0] config_delay3;
-wire [15:0] config_delay4;
-wire [15:0] config_delay5;
-wire [15:0] config_delay6;
-wire [15:0] config_delay7;
-
-beam_config_parser #(
-    .MAX_DELAY_TICKS(PRF_PERIOD_TICKS - 1)
-) config_parser (
-    .clk(clk),
-    .rx_data(uart_rx_data),
-    .rx_valid(uart_rx_valid),
-    .config_valid(config_valid),
-    .angle_table_valid(angle_table_valid),
-    .angle_table_index(angle_table_index),
-    .freq_word(config_freq_word),
-    .burst_cycles(config_burst_cycles),
-    .delay0(config_delay0),
-    .delay1(config_delay1),
-    .delay2(config_delay2),
-    .delay3(config_delay3),
-    .delay4(config_delay4),
-    .delay5(config_delay5),
-    .delay6(config_delay6),
-    .delay7(config_delay7)
-);
-
-// Scan steering table. Index 0..10 represents
-// -10, -8, -6, -4, -2, 0, +2, +4, +6, +8, +10 degrees.
-// The table assumes 1.00 mm element pitch and 1540 m/s propagation speed.
-// Values are true-time delays in 50 MHz clock ticks (20 ns per tick), so they
-// are independent of carrier frequency. They have been recalculated/verified
-// for all 11 scan angles; the 2.2 MHz carrier changes phase per tick, not the
-// propagation delay needed for a given steering angle.
-
-function [15:0] positive_angle_delay;
-    input [3:0] magnitude_index;
-    input [2:0] channel_index;
-    begin
-        positive_angle_delay = 16'd0;
-
-        case (magnitude_index)
-            // +2 degrees:  [0, 1, 2, 3, 5, 6, 7, 8]
-            4'd1: begin
-                case (channel_index)
-                    3'd0: positive_angle_delay = 16'd0;
-                    3'd1: positive_angle_delay = 16'd1;
-                    3'd2: positive_angle_delay = 16'd2;
-                    3'd3: positive_angle_delay = 16'd3;
-                    3'd4: positive_angle_delay = 16'd5;
-                    3'd5: positive_angle_delay = 16'd6;
-                    3'd6: positive_angle_delay = 16'd7;
-                    default: positive_angle_delay = 16'd8;
-                endcase
-            end
-
-            // +4 degrees:  [0, 2, 5, 7, 9, 11, 14, 16]
-            4'd2: begin
-                case (channel_index)
-                    3'd0: positive_angle_delay = 16'd0;
-                    3'd1: positive_angle_delay = 16'd2;
-                    3'd2: positive_angle_delay = 16'd5;
-                    3'd3: positive_angle_delay = 16'd7;
-                    3'd4: positive_angle_delay = 16'd9;
-                    3'd5: positive_angle_delay = 16'd11;
-                    3'd6: positive_angle_delay = 16'd14;
-                    default: positive_angle_delay = 16'd16;
-                endcase
-            end
-
-            // +6 degrees:  [0, 3, 7, 10, 14, 17, 20, 24]
-            4'd3: begin
-                case (channel_index)
-                    3'd0: positive_angle_delay = 16'd0;
-                    3'd1: positive_angle_delay = 16'd3;
-                    3'd2: positive_angle_delay = 16'd7;
-                    3'd3: positive_angle_delay = 16'd10;
-                    3'd4: positive_angle_delay = 16'd14;
-                    3'd5: positive_angle_delay = 16'd17;
-                    3'd6: positive_angle_delay = 16'd20;
-                    default: positive_angle_delay = 16'd24;
-                endcase
-            end
-
-            // +8 degrees:  [0, 5, 9, 14, 18, 23, 27, 32]
-            4'd4: begin
-                case (channel_index)
-                    3'd0: positive_angle_delay = 16'd0;
-                    3'd1: positive_angle_delay = 16'd5;
-                    3'd2: positive_angle_delay = 16'd9;
-                    3'd3: positive_angle_delay = 16'd14;
-                    3'd4: positive_angle_delay = 16'd18;
-                    3'd5: positive_angle_delay = 16'd23;
-                    3'd6: positive_angle_delay = 16'd27;
-                    default: positive_angle_delay = 16'd32;
-                endcase
-            end
-
-            // +10 degrees: [0, 6, 11, 17, 23, 28, 34, 39]
-            4'd5: begin
-                case (channel_index)
-                    3'd0: positive_angle_delay = 16'd0;
-                    3'd1: positive_angle_delay = 16'd6;
-                    3'd2: positive_angle_delay = 16'd11;
-                    3'd3: positive_angle_delay = 16'd17;
-                    3'd4: positive_angle_delay = 16'd23;
-                    3'd5: positive_angle_delay = 16'd28;
-                    3'd6: positive_angle_delay = 16'd34;
-                    default: positive_angle_delay = 16'd39;
-                endcase
-            end
-
-            // 0 degrees.
-            default: positive_angle_delay = 16'd0;
-        endcase
-    end
-endfunction
-
-function [15:0] scan_angle_delay;
-    input [3:0] angle_index;
-    input [2:0] channel_index;
-    reg [3:0] magnitude_index;
-    reg [2:0] table_channel;
-    begin
-        if (angle_index >= 4'd5) begin
-            magnitude_index = angle_index - 4'd5;
-            table_channel = channel_index;
-        end
-        else begin
-            magnitude_index = 4'd5 - angle_index;
-            table_channel = 3'd7 - channel_index;
-        end
-
-        scan_angle_delay = positive_angle_delay(magnitude_index, table_channel);
-    end
-endfunction
-
-// UART command 0x02 can replace these 11 profiles at run time. Eight separate
-// memories keep each channel to one write port and one asynchronous read port.
-reg [15:0] angle_table_ch0 [0:10];
-reg [15:0] angle_table_ch1 [0:10];
-reg [15:0] angle_table_ch2 [0:10];
-reg [15:0] angle_table_ch3 [0:10];
-reg [15:0] angle_table_ch4 [0:10];
-reg [15:0] angle_table_ch5 [0:10];
-reg [15:0] angle_table_ch6 [0:10];
-reg [15:0] angle_table_ch7 [0:10];
-integer angle_init_index;
-
-initial begin
-    for (angle_init_index = 0; angle_init_index < 11;
-         angle_init_index = angle_init_index + 1) begin
-        angle_table_ch0[angle_init_index] = scan_angle_delay(angle_init_index, 3'd0);
-        angle_table_ch1[angle_init_index] = scan_angle_delay(angle_init_index, 3'd1);
-        angle_table_ch2[angle_init_index] = scan_angle_delay(angle_init_index, 3'd2);
-        angle_table_ch3[angle_init_index] = scan_angle_delay(angle_init_index, 3'd3);
-        angle_table_ch4[angle_init_index] = scan_angle_delay(angle_init_index, 3'd4);
-        angle_table_ch5[angle_init_index] = scan_angle_delay(angle_init_index, 3'd5);
-        angle_table_ch6[angle_init_index] = scan_angle_delay(angle_init_index, 3'd6);
-        angle_table_ch7[angle_init_index] = scan_angle_delay(angle_init_index, 3'd7);
-    end
-end
-
+// Capture status AFTER the command has updated the session state. Responses
+// are acknowledgments/status snapshots, not ultrasound data or ADC triggers.
+// The host must wait for a response before sending another normal request.
+// STOP is never blocked by response_busy.
 always @(posedge clk) begin
-    if (angle_table_valid) begin
-        angle_table_ch0[angle_table_index] <= config_delay0;
-        angle_table_ch1[angle_table_index] <= config_delay1;
-        angle_table_ch2[angle_table_index] <= config_delay2;
-        angle_table_ch3[angle_table_index] <= config_delay3;
-        angle_table_ch4[angle_table_index] <= config_delay4;
-        angle_table_ch5[angle_table_index] <= config_delay5;
-        angle_table_ch6[angle_table_index] <= config_delay6;
-        angle_table_ch7[angle_table_index] <= config_delay7;
+    response_pending <= command_valid;
+    response_valid <= response_pending;
+    if (command_valid) begin
+        response_command <= command;
+        response_sequence <= sequence_id;
+        if (!command_known)
+            response_result <= 8'd1;
+        else if (!argument_valid)
+            response_result <= 8'd2;
+        else
+            response_result <= 8'd0;
+    end
+    if (response_pending) begin
+        response_active <= session_active ?
+                           ({6'd0, selected_channel} + 8'd1) : 8'd0;
+        response_next <= {6'd0, next_channel} + 8'd1;
+        response_flags <= {6'd0, session_completed, session_active};
     end
 end
 
-// Frequency and cycle count are intentionally locked to the measured optimum.
-// UART configuration cannot override these two values in the final build.
-wire [31:0] frame_freq_word = DEFAULT_FREQ_WORD;
-wire [7:0] frame_burst_cycles = DEFAULT_BURST_CYCLES;
-wire [3:0] frame_angle_index = active_frame_angle_index;
-wire [15:0] frame_delay0 = angle_table_ch0[frame_angle_index];
-wire [15:0] frame_delay1 = angle_table_ch1[frame_angle_index];
-wire [15:0] frame_delay2 = angle_table_ch2[frame_angle_index];
-wire [15:0] frame_delay3 = angle_table_ch3[frame_angle_index];
-wire [15:0] frame_delay4 = angle_table_ch4[frame_angle_index];
-wire [15:0] frame_delay5 = angle_table_ch5[frame_angle_index];
-wire [15:0] frame_delay6 = angle_table_ch6[frame_angle_index];
-wire [15:0] frame_delay7 = angle_table_ch7[frame_angle_index];
-// The final measured optimum is seven 50 MHz clocks = 140 ns. It is applied to
-// every channel and every frame; S1 cannot alter it.
-wire [15:0] frame_damp_delay_ticks = FIXED_DAMP_DELAY_TICKS;
-
-wire ch1_pin;
-wire ch1_nin;
-wire ch2_pin;
-wire ch2_nin;
-wire ch3_pin;
-wire ch3_nin;
-wire ch4_pin;
-wire ch4_nin;
-wire ch5_pin;
-wire ch5_nin;
-wire ch6_pin;
-wire ch6_nin;
-wire ch7_pin;
-wire ch7_nin;
-wire ch8_pin;
-wire ch8_nin;
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel1 (
+wire ch_pin;
+wire ch_nin;
+hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) pulse_generator (
     .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay0),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch1_pin), .nin_out(ch1_nin)
+    .freq_word(DEFAULT_FREQ_WORD), .burst_cycles(DEFAULT_BURST_CYCLES),
+    .start_delay_ticks(16'd0), .damp_delay_ticks(FIXED_DAMP_DELAY_TICKS),
+    .pin_out(ch_pin), .nin_out(ch_nin)
 );
 
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel2 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay1),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch2_pin), .nin_out(ch2_nin)
-);
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel3 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay2),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch3_pin), .nin_out(ch3_nin)
-);
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel4 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay3),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch4_pin), .nin_out(ch4_nin)
-);
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel5 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay4),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch5_pin), .nin_out(ch5_nin)
-);
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel6 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay5),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch6_pin), .nin_out(ch6_nin)
-);
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel7 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay6),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch7_pin), .nin_out(ch7_nin)
-);
-
-hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) channel8 (
-    .clk(clk), .run_enable(channel_run_enable), .frame_start(frame_start),
-    .freq_word(frame_freq_word), .burst_cycles(frame_burst_cycles),
-    .start_delay_ticks(frame_delay7),
-    .damp_delay_ticks(frame_damp_delay_ticks),
-    .pin_out(ch8_pin), .nin_out(ch8_nin)
-);
-
-// Mask both pulser inputs immediately when S2 disables output. Each channel
-// guarantees mutually exclusive PIN/NIN drive: PIN carries the positive main
-// burst and NIN carries only the short negative damping tail.
-assign tx1_pin_b2 = output_enabled && ch1_pin;
-assign tx1_nin_f2 = output_enabled && ch1_nin;
-assign tx2_pin_e1 = output_enabled && ch2_pin;
-assign tx2_nin_e3 = output_enabled && ch2_nin;
-assign tx3_pin_j1 = output_enabled && ch3_pin;
-assign tx3_nin_g4 = output_enabled && ch3_nin;
-assign tx4_pin_h1 = output_enabled && ch4_pin;
-assign tx4_nin_k7 = output_enabled && ch4_nin;
-assign tx5_pin_l7 = output_enabled && ch5_pin;
-assign tx5_nin_l10 = output_enabled && ch5_nin;
-assign tx6_pin_l9 = output_enabled && ch6_pin;
-assign tx6_nin_j8 = output_enabled && ch6_nin;
-assign tx7_pin_f7 = output_enabled && ch7_pin;
-assign tx7_nin_k8 = output_enabled && ch7_nin;
-assign tx8_pin_l8 = output_enabled && ch8_pin;
-assign tx8_nin_k10 = output_enabled && ch8_nin;
+// Register ALL external timing signals together. Combinational decoding of
+// a binary frame counter or selector must never directly drive the HV pulser:
+// unequal propagation delays could otherwise create unintended narrow pulses.
+// This adds the SAME one-clock latency to J11, J10, PIN, NIN and READY, leaving
+// all relative timing and the five-second external session length unchanged.
+// Restart/STOP samples run_enable=0 and clears the old outputs on that edge;
+// a new session begins with a full low clock followed by a fresh J11 pulse.
+reg [3:0] pin_registered = 4'd0;
+reg [3:0] nin_registered = 4'd0;
+reg j11_registered = 1'b0;
+reg j10_registered = 1'b0;
+reg ready_registered = 1'b0;
+reg done_registered = 1'b0;
+always @(posedge clk) begin
+    ready_registered <= channel_run_enable;
+    done_registered <= session_completed;
+    j11_registered <= channel_run_enable && (frame_tick < TRIGGER_PULSE_TICKS);
+    j10_registered <= channel_run_enable &&
+                      (frame_tick >= PRETRIGGER_TICKS) &&
+                      (frame_tick < PRETRIGGER_TICKS + PRF_HALF_TICKS);
+    pin_registered <= 4'd0;
+    nin_registered <= 4'd0;
+    if (channel_run_enable) begin
+        pin_registered[selected_channel] <= ch_pin;
+        nin_registered[selected_channel] <= ch_nin;
+    end
+end
+assign led_ready = ready_registered;
+assign led_done = done_registered;
+assign sync_prf_j11 = j11_registered;
+assign sync_prf_j10 = j10_registered;
+assign tx1_pin_b2 = pin_registered[0];
+assign tx1_nin_f2 = nin_registered[0];
+assign tx2_pin_e1 = pin_registered[1];
+assign tx2_nin_e3 = nin_registered[1];
+assign tx3_pin_j1 = pin_registered[2];
+assign tx3_nin_g4 = nin_registered[2];
+assign tx4_pin_h1 = pin_registered[3];
+assign tx4_nin_k7 = nin_registered[3];
+assign tx5_pin_l7 = 1'b0;
+assign tx5_nin_l10 = 1'b0;
+assign tx6_pin_l9 = 1'b0;
+assign tx6_nin_j8 = 1'b0;
+assign tx7_pin_f7 = 1'b0;
+assign tx7_nin_k8 = 1'b0;
+assign tx8_pin_l8 = 1'b0;
+assign tx8_nin_k10 = 1'b0;
 
 endmodule
 
@@ -628,248 +368,6 @@ always @(posedge clk) begin
         else begin
             damp_count <= damp_count + 1'b1;
         end
-    end
-end
-
-endmodule
-
-
-// 8-N-1 UART receiver. CLKS_PER_BIT=434 at 50 MHz/115200 baud.
-module uart_rx_8n1 #(
-    parameter integer CLKS_PER_BIT = 434
-)(
-    input  wire clk,
-    input  wire rx,
-    output reg [7:0] data,
-    output reg valid
-);
-
-localparam [1:0] UART_IDLE  = 2'd0;
-localparam [1:0] UART_START = 2'd1;
-localparam [1:0] UART_DATA  = 2'd2;
-localparam [1:0] UART_STOP  = 2'd3;
-
-reg rx_meta = 1'b1;
-reg rx_sync = 1'b1;
-reg [1:0] state = UART_IDLE;
-reg [15:0] clock_count = 16'd0;
-reg [2:0] bit_index = 3'd0;
-reg [7:0] shift_register = 8'd0;
-
-initial begin
-    data = 8'd0;
-    valid = 1'b0;
-end
-
-always @(posedge clk) begin
-    rx_meta <= rx;
-    rx_sync <= rx_meta;
-    valid <= 1'b0;
-
-    case (state)
-        UART_IDLE: begin
-            clock_count <= 16'd0;
-            bit_index <= 3'd0;
-            if (!rx_sync) begin
-                state <= UART_START;
-                clock_count <= (CLKS_PER_BIT / 2) - 1;
-            end
-        end
-
-        UART_START: begin
-            if (clock_count == 16'd0) begin
-                if (!rx_sync) begin
-                    state <= UART_DATA;
-                    clock_count <= CLKS_PER_BIT - 1;
-                end
-                else begin
-                    state <= UART_IDLE;
-                end
-            end
-            else begin
-                clock_count <= clock_count - 1'b1;
-            end
-        end
-
-        UART_DATA: begin
-            if (clock_count == 16'd0) begin
-                shift_register[bit_index] <= rx_sync;
-                clock_count <= CLKS_PER_BIT - 1;
-
-                if (bit_index == 3'd7) begin
-                    bit_index <= 3'd0;
-                    state <= UART_STOP;
-                end
-                else begin
-                    bit_index <= bit_index + 1'b1;
-                end
-            end
-            else begin
-                clock_count <= clock_count - 1'b1;
-            end
-        end
-
-        UART_STOP: begin
-            if (clock_count == 16'd0) begin
-                if (rx_sync) begin
-                    data <= shift_register;
-                    valid <= 1'b1;
-                end
-                state <= UART_IDLE;
-            end
-            else begin
-                clock_count <= clock_count - 1'b1;
-            end
-        end
-
-        default: state <= UART_IDLE;
-    endcase
-end
-
-endmodule
-
-
-// Packet format, all multibyte values little-endian:
-//   A5 5A CMD WORD[31:0] VALUE D0[15:0] ... D7[15:0] CHECKSUM
-// CMD=01: WORD is frequency tuning word and VALUE is burst cycles.
-// CMD=02: WORD is reserved and VALUE is scan angle-table index 0..10.
-// CHECKSUM is XOR(command through the final delay byte). Invalid packets do
-// not alter the active configuration.
-module beam_config_parser #(
-    parameter integer MAX_DELAY_TICKS = 2499
-)(
-    input  wire clk,
-    input  wire [7:0] rx_data,
-    input  wire rx_valid,
-    output reg config_valid,
-    output reg angle_table_valid,
-    output reg [3:0] angle_table_index,
-    output reg [31:0] freq_word,
-    output reg [7:0] burst_cycles,
-    output reg [15:0] delay0,
-    output reg [15:0] delay1,
-    output reg [15:0] delay2,
-    output reg [15:0] delay3,
-    output reg [15:0] delay4,
-    output reg [15:0] delay5,
-    output reg [15:0] delay6,
-    output reg [15:0] delay7
-);
-
-localparam [1:0] WAIT_A5 = 2'd0;
-localparam [1:0] WAIT_5A = 2'd1;
-localparam [1:0] READ_BODY = 2'd2;
-localparam [1:0] READ_CHECKSUM = 2'd3;
-
-localparam [31:0] MIN_FREQ_WORD = 32'd85899346;   // 1 MHz at 50 MHz
-localparam [31:0] MAX_FREQ_WORD = 32'd343597384;  // 4 MHz at 50 MHz
-
-reg [1:0] state = WAIT_A5;
-reg [4:0] body_index = 5'd0;
-reg [7:0] command = 8'd0;
-reg [7:0] checksum = 8'd0;
-
-initial begin
-    config_valid = 1'b0;
-    angle_table_valid = 1'b0;
-    angle_table_index = 4'd0;
-    freq_word = 32'h0A3D70A4;
-    burst_cycles = 8'd2;
-    delay0 = 16'd0;
-    delay1 = 16'd0;
-    delay2 = 16'd0;
-    delay3 = 16'd0;
-    delay4 = 16'd0;
-    delay5 = 16'd0;
-    delay6 = 16'd0;
-    delay7 = 16'd0;
-end
-
-wire delays_valid =
-    (delay0 <= MAX_DELAY_TICKS) && (delay1 <= MAX_DELAY_TICKS) &&
-    (delay2 <= MAX_DELAY_TICKS) && (delay3 <= MAX_DELAY_TICKS) &&
-    (delay4 <= MAX_DELAY_TICKS) && (delay5 <= MAX_DELAY_TICKS) &&
-    (delay6 <= MAX_DELAY_TICKS) && (delay7 <= MAX_DELAY_TICKS);
-
-always @(posedge clk) begin
-    config_valid <= 1'b0;
-    angle_table_valid <= 1'b0;
-
-    if (rx_valid) begin
-        case (state)
-            WAIT_A5: begin
-                if (rx_data == 8'hA5)
-                    state <= WAIT_5A;
-            end
-
-            WAIT_5A: begin
-                if (rx_data == 8'h5A) begin
-                    state <= READ_BODY;
-                    body_index <= 5'd0;
-                    checksum <= 8'd0;
-                end
-                else if (rx_data != 8'hA5) begin
-                    state <= WAIT_A5;
-                end
-            end
-
-            READ_BODY: begin
-                checksum <= checksum ^ rx_data;
-
-                case (body_index)
-                    5'd0: command <= rx_data;
-                    5'd1: freq_word[7:0] <= rx_data;
-                    5'd2: freq_word[15:8] <= rx_data;
-                    5'd3: freq_word[23:16] <= rx_data;
-                    5'd4: freq_word[31:24] <= rx_data;
-                    5'd5: burst_cycles <= rx_data;
-                    5'd6: delay0[7:0] <= rx_data;
-                    5'd7: delay0[15:8] <= rx_data;
-                    5'd8: delay1[7:0] <= rx_data;
-                    5'd9: delay1[15:8] <= rx_data;
-                    5'd10: delay2[7:0] <= rx_data;
-                    5'd11: delay2[15:8] <= rx_data;
-                    5'd12: delay3[7:0] <= rx_data;
-                    5'd13: delay3[15:8] <= rx_data;
-                    5'd14: delay4[7:0] <= rx_data;
-                    5'd15: delay4[15:8] <= rx_data;
-                    5'd16: delay5[7:0] <= rx_data;
-                    5'd17: delay5[15:8] <= rx_data;
-                    5'd18: delay6[7:0] <= rx_data;
-                    5'd19: delay6[15:8] <= rx_data;
-                    5'd20: delay7[7:0] <= rx_data;
-                    5'd21: delay7[15:8] <= rx_data;
-                    default: ;
-                endcase
-
-                if (body_index == 5'd21) begin
-                    state <= READ_CHECKSUM;
-                end
-                else begin
-                    body_index <= body_index + 1'b1;
-                end
-            end
-
-            READ_CHECKSUM: begin
-                if ((rx_data == checksum) && delays_valid) begin
-                    if ((command == 8'h01) &&
-                        (freq_word >= MIN_FREQ_WORD) &&
-                        (freq_word <= MAX_FREQ_WORD) &&
-                        (burst_cycles >= 8'd1) &&
-                        (burst_cycles <= 8'd32)) begin
-                        config_valid <= 1'b1;
-                    end
-                    else if ((command == 8'h02) &&
-                             (burst_cycles <= 8'd10)) begin
-                        angle_table_index <= burst_cycles[3:0];
-                        angle_table_valid <= 1'b1;
-                    end
-                end
-                state <= WAIT_A5;
-            end
-
-            default: state <= WAIT_A5;
-        endcase
     end
 end
 

@@ -8,3 +8,11 @@
 *.ini text eol=crlf
 *.cfg text eol=crlf
 *.cmd text eol=crlf
+
+# Preserve exact checksums of FPGA release artifacts on Windows checkouts.
+fpga/tang_primer_25k_hv7350/burn_test/*.fs -text
+fpga/tang_primer_25k_hv7350/burn_test/*.bin -text
+fpga/tang_primer_25k_hv7350/burn_test/*.tar.gz -text
+fpga/tang_primer_25k_hv7350/handoff/*.zip -text
+fpga/tang_primer_25k_hv7350/artifacts/*.fs -text
+fpga/tang_primer_25k_hv7350/artifacts/*.bin -text

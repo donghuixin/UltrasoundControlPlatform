@@ -1,10 +1,10 @@
-// Tang Primer 25K eight-channel HV7350 beamformer constraints.
+// Tang Primer 25K four-probe sequential HV7350 controller constraints.
 // Target: GW5A-LV25MG121NC1/I0, 3.3 V I/O.
 
 IO_LOC "clk" E2;
 IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
 
-// Transmission starts automatically; S2 is an optional emergency stop/restart.
+// S2 starts/advances HV1..HV4; each press starts a fresh five-second session.
 IO_LOC "s2" H10;
 IO_PORT "s2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
 
@@ -14,8 +14,8 @@ IO_PORT "led_ready" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 IO_LOC "led_done" D7;
 IO_PORT "led_done" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 
-// 115200-baud host configuration interface. Connect a 3.3 V USB-UART TX to
-// B3 and share GND. C3 is held at the UART idle level in this version.
+// 115200 8N1 control/status UART via the Primer 25K dock USB-C debugger.
+// B3 receives host TX; C3 sends FPGA replies. Do not attach a second TX driver.
 IO_LOC "uart_rx_b3" B3;
 IO_PORT "uart_rx_b3" IO_TYPE=LVCMOS33 PULL_MODE=UP BANK_VCCIO=3.3;
 

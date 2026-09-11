@@ -29,6 +29,10 @@ The board uses:
 - OEN, REN, CLK, PINx, and NINx are logic inputs referenced to VLL. On this
   board VLL is 3V3, so use 3.3 V logic, not 5 V.
 
+> Current firmware wiring: see [four-probe control](four_probe_control.md).
+> The old single-channel J11-to-PIN1 examples later in this document do NOT
+> apply to the active project: J11 is synchronization only; PIN1=B2, NIN1=F2.
+
 ## H2 FPGA Logic Connector
 
 H2 is the control connector for U1. All logic pins are 3.3 V domain signals.

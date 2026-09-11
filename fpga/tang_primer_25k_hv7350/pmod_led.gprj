@@ -6,6 +6,7 @@
     <Device name="GW5A-25A" pn="GW5A-LV25MG121NC1/I0">gw5a25a-002</Device>
     <FileList>
         <File path="src/pmod_led.v" type="file.verilog" enable="1"/>
+        <File path="src/probe_uart_control.v" type="file.verilog" enable="1"/>
         <File path="src/pmod_led.cst" type="file.cst" enable="1"/>
         <File path="src/pmod_led.sdc" type="file.sdc" enable="1"/>
     </FileList>

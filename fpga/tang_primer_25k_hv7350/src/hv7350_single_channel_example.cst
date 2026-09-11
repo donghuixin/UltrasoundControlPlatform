@@ -1,0 +1,35 @@
+// Constraints for the HV7350 single-channel project.
+//
+// Use this file with hv7350_single_channel.gprj, which instantiates
+// src/hv7350_top.v as the top-level wrapper.
+
+IO_LOC "clk" E2;
+IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
+
+IO_LOC "s2" H10;
+IO_PORT "s2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
+
+IO_LOC "led_ready" E8;
+IO_PORT "led_ready" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "led_done" D7;
+IO_PORT "led_done" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// Temporary three-wire HV7350 bring-up using the same FPGA pins that were
+// previously used by wave_100k_j11, wave_5m_f7, and burst_5m_j8.
+IO_LOC "hv_pin1" J11;
+IO_PORT "hv_pin1" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "hv_nin1" F7;
+IO_PORT "hv_nin1" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC "hv_clk" J8;
+IO_PORT "hv_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// If these are wired to FPGA pins instead of tied high on the board,
+// assign actual locations here.
+// IO_LOC "hv_oen" <FPGA_PIN>;
+// IO_PORT "hv_oen" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+//
+// IO_LOC "hv_ren" <FPGA_PIN>;
+// IO_PORT "hv_ren" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;

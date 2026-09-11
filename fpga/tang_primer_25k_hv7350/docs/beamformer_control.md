@@ -47,6 +47,9 @@ not change the propagation delay required for a given angle. The
 table was recalculated and quantized again at 20 ns resolution; its tick values
 therefore remain the same, while the corresponding carrier phase changes.
 
+> The active project is now the [four-probe controller](four_probe_control.md).
+> The wiring table below remains valid; historical beam/angle control is not active.
+
 ## FPGA to HV7350 H2 Wiring
 
 All signals in this table are 3.3 V logic. They do not carry high voltage.
