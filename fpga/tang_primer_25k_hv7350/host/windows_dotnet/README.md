@@ -39,7 +39,7 @@ dotnet run --project host/windows_dotnet/ProbeControl.Cli -- list
 # 只读取发射状态
 dotnet run --project host/windows_dotnet/ProbeControl.Cli -- COM5 status
 
-# 显式启动 HV1 五秒；此一次性命令先做 STATUS 确认，再发 START
+# 显式启动 HV1 持续发射；此一次性命令先做 STATUS 确认，再发 START
 dotnet run --project host/windows_dotnet/ProbeControl.Cli -- COM5 start 1
 
 # 显式停止
@@ -86,7 +86,7 @@ async Task StartSelectedProbeAsync(int probe)
     if (fpga is null) throw new InvalidOperationException("Not connected.");
     // 此前先让 AFE/TSW 进入可接收 J11 触发的采集状态。
     ProbeResponse accepted = await fpga.StartAsync(probe);
-    // ACK 表示命令已处理，不表示五秒发射已完成。
+    // ACK 表示命令已处理；持续发射，不存在五秒完成事件。
 }
 
 async Task StopAndDisconnectAsync()
@@ -99,7 +99,7 @@ async Task StopAndDisconnectAsync()
 }
 ```
 
-如果 STOP 失败，例子不会把异常吞掉并显示“已安全停止”。应用应提示“停止未确认”，保留明确重试 STOP/查询 STATUS 的入口；若决定强制关闭 COM，仍不得宣称发射已停止。关闭 COM、退出进程、拔 USB、取消 `CancellationToken` 都不是硬件停止指令。
+如果 STOP 失败，例子不会把异常吞掉并显示“已安全停止”。应用应提示“停止未确认”，保留明确重试 STOP/查询 STATUS 的入口；若决定强制关闭 COM，仍不得宣称发射已停止。关闭 COM、退出进程、拔 USB、取消 `CancellationToken` 都不是硬件停止指令，**新固件没有五秒自动停止兜底，会一直发射**。S2 只切换探头，不是停止按钮。
 
 在 WPF/WinForms 事件里直接 `await` 这些方法，不能用 `.Result` 或 `.Wait()` 卡住 UI。库内部只让持锁请求创建一个同步串口 I/O 工作任务；库不会回调 UI，也不执行后台轮询。取消令牌只取消等待，不会替用户发送 STOP。
 
@@ -107,10 +107,10 @@ async Task StopAndDisconnectAsync()
 
 | API | 作用 |
 |---|---|
-| `GetStatusAsync()` | 获取状态，不改变发射、不重置五秒计时 |
-| `StartAsync(1..4)` | 启动所选一路五秒；正在发射也立即重启该路/切换所选路并重计时 |
-| `NextAsync()` | 与一次 S2 按下事件等效，启动 NEXT 指定通道五秒 |
-| `StopAsync()` | 立即停止当前输出，不把这次会话标记为自然完成 |
+| `GetStatusAsync()` | 获取状态，不改变发射、不重启帧 |
+| `StartAsync(1..4)` | 持续启动所选一路；正在发射也立即切换/重启所选路，从新触发帧开始 |
+| `NextAsync()` | 与一次 S2 按下事件等效，持续启动 NEXT 指定通道 |
+| `StopAsync()` | 明确停止当前输出，NEXT 游标保留；接收软件可继续录制 |
 | `DisposeAsync()` | 等待正在进行的交换退出后关闭串口；绝不隐含 STOP |
 
 “立即”指 FPGA 解析有效命令后执行，不包括 Windows 排队、USB 和 UART 传输延迟；它不是硬实时急停。S2 另有约 20ms 防抖。STOP 与更换通道可以截断正在发射的 burst；不是等待当前 burst 完成。
@@ -120,39 +120,64 @@ async Task StopAndDisconnectAsync()
 - `ActiveProbe=0` 表示空闲，1～4 表示正在发射的通道。
 - `NextProbe=1..4` 表示下一次 NEXT/S2 要启动的通道。START(n) 将 NEXT 更新为 n+1，4 后回到 1。
 - `Running=true` 表示会话正在进行。
-- `Completed=true` 只表示某一次五秒会话自然完成，保持到 START/NEXT/STOP 清除；不是一个可靠的采集事务 ID，也不包含哪个通道完成。
+- `Completed` 是旧限时固件的兼容字段，**当前持续版恒 false**；新流程不能轮询该字段等待结束。解码器仍接受旧版合法的空闲 COMPLETED=1 回复，不表示本示例会等待自然完成。
 - 协议没有上电 ID、固件版本、会话号、剩余时间、完成事件或 S2 推送消息。SEQ 只用于回包匹配，8bit 回绕，固件不靠它做去重。
 
-固定四探头的上位机采集顺序推荐用显式 `START(1)` 到 `START(4)`，不要依赖 NEXT 推算通道；手动 S2 操作会改变 NEXT 和正在发射的通道。自动采集中请约定不按 S2。本协议无法远程锁定按键，也无法确认用户在两次 STATUS 之间没有插入过别的会话。
+四探头均由用户选择：界面 HV1～HV4 按钮分别绑定 `StartAsync(1)`～`StartAsync(4)`，下一路绑定 `NextAsync()`；实体 S2 改变同一 NEXT 游标。接收端启动一次持续录制，切换通道不重启接收。SDK 本身不做自动顺序扫描，也不自动轮询或停止。
 
-按序 await 的采集框架如下。`ArmReceiverAsync` 和 `FinishReceiverAsync` 是已有采集软件要实现的 API，不属于本库：
+以下是绑定显式用户操作的框架，不是依次自动调用的扫描循环。`ArmReceiverContinuousAsync`、`FinishReceiverAsync` 及保存数据功能由现有 AFE/TSW SDK 实现，不属于本库。接收应使用独立工作线程持续分块落盘，验证丢帧/溢出，不以固定 50,000 帧为结束条件：
 
 ```csharp
-for (int probe = 1; probe <= 4; probe++)
+bool receiverArmed = false; // 应用层标志，不等于实时接收硬件健康状态。
+
+async Task BeginRecordingAsync() // “开始录制”按钮，不自动发射。
 {
-    await ArmReceiverAsync(probe); // 必须先让接收板准备好，不要等 START ACK 才 Arm。
-    await fpga.StartAsync(probe);
-    var deadline = System.Diagnostics.Stopwatch.StartNew();
-    while (true)
-    {
-        await Task.Delay(100); // 10Hz 查询只作状态显示，不是发射时钟。
-        ProbeResponse status = await fpga.GetStatusAsync();
-        if (status.Running && status.ActiveProbe != probe)
-            throw new InvalidOperationException("Channel changed, possibly by S2; discard/review this capture.");
-        if (!status.Running)
-        {
-            if (!status.Completed)
-                throw new InvalidOperationException("Capture was stopped rather than naturally completed.");
-            break;
-        }
-        if (deadline.Elapsed > TimeSpan.FromSeconds(7))
-            throw new TimeoutException("Session completion not confirmed; ask operator to STOP/check state.");
-    }
-    await FinishReceiverAsync(probe); // 同时核对实际触发数、采样数及采集溢出状态。
+    if (fpga is null) throw new InvalidOperationException("Not connected.");
+    if (receiverArmed) throw new InvalidOperationException("Already recording.");
+    if ((await fpga.GetStatusAsync()).Running)
+        throw new InvalidOperationException("Explicitly STOP before initially arming reception.");
+    if (!await ArmReceiverContinuousAsync()) // 必须真实确认已能接收 J11 触发。
+        throw new InvalidOperationException("Receiver not armed; START was not sent.");
+    receiverArmed = true;
+}
+
+async Task ChooseProbeAsync(int probe) // HV1～HV4 按钮；不重启接收。
+{
+    if (fpga is null || !receiverArmed) throw new InvalidOperationException("Arm receiver first.");
+    ProbeResponse ack = await fpga.StartAsync(probe);
+    if (!ack.Running || ack.ActiveProbe != probe)
+        throw new InvalidOperationException("START not confirmed; mark UNKNOWN and recover explicitly.");
+    // 记录请求前后主机时间及 ack，不把 ACK 当作精确换路采样时刻。
+}
+
+async Task NextProbeAsync() // “下一路”按钮；物理 S2 也可操作。
+{
+    if (fpga is null || !receiverArmed) throw new InvalidOperationException("Arm receiver first.");
+    if (!(await fpga.NextAsync()).Running)
+        throw new InvalidOperationException("NEXT not confirmed; recover explicitly.");
+}
+
+async Task StopTransmissionAsync() // “停止发射”按钮；接收仍继续。
+{
+    if (fpga is null) throw new InvalidOperationException("Not connected.");
+    if ((await fpga.StopAsync()).Running)
+        throw new InvalidOperationException("STOP not confirmed.");
+}
+
+async Task EndRecordingAsync() // 用户先停止发射，再点“结束录制”。
+{
+    if (fpga is null || !receiverArmed) throw new InvalidOperationException("Not recording.");
+    if ((await fpga.GetStatusAsync()).Running)
+        throw new InvalidOperationException("Explicitly STOP before closing reception.");
+    // 此后也要避免其他人按 S2：查询并不能锁定物理按钮。
+    await FinishReceiverAsync(); // 核对实际采样/触发计数、溢出和丢帧，完成落盘。
+    receiverArmed = false;
 }
 ```
 
-不要把这段循环理解为抗人为干预的事务协议；即使 ACTIVE 匹配也可能有同路重新启动。J11 才是每个 burst 的硬件采样参考。FPGA 在处理 START 后即可产生首个 J11，串口 ACK 到 PC 时首个或多个触发可能早已发生。
+界面操作要序列化，阻止反复点击堆积选择请求；接收 SDK 的取数线程不能被控制串口的等待堵塞。SDK 异常由应用显示并提供明确的 STOP/STATUS 恢复操作，不要在 `finally` 偷偷启动/重试/停止真实硬件。
+
+J11 才是每个 burst 的硬件采样参考。FPGA 在处理 START 后即可产生首个 J11，串口 ACK 到 PC 时首个或多个触发可能早已发生。**J11 没有通道编号，本协议也没有 S2 事件推送，STATUS 无法精确识别按键换路对应哪一帧。** 记录连续原始数据与命令/状态日志，标记不确定换路区间；不能直接把最后一次 STATUS 的通道当作每帧确切标签。切换可能截断旧 J11/burst，新旧触发间隔不保证 100µs，应作废边界帧；接收 SDK 必须能处理这些间隔。需要精确逐帧通道标签须扩展硬件/协议。
 
 ## 5. 超时、取消、重连：必须按“不确定”处理
 
@@ -172,7 +197,7 @@ STOP 也服从同一个互斥锁，不能穿插正在发送的命令。正常驱
 
 关闭连接也会设置 `RequiresRecovery=true`；`LastResponse` 保留的只是历史快照，不应被 UI 当成离线后的实时状态。
 
-严禁超时后盲目重发 START/NEXT：固件不去重，再发会切换通道/重启五秒会话。示例不会重试任何命令。恢复 STATUS/STOP 前会清除主机未发送缓冲，等待 30ms，使 FPGA 的 10ms 半包超时有机会复位，再清除旧接收数据并发送一个新 SEQ 的请求。这只能恢复普通串口分包，不能证明已损坏的 USB 驱动没有滞留数据；失败时应重新连接后再明确 STOP/STATUS。
+严禁超时后盲目重发 START/NEXT：固件不去重，再发会切换通道/重启发射帧。示例不会重试任何命令。恢复 STATUS/STOP 前会清除主机未发送缓冲，等待 30ms，使 FPGA 的 10ms 半包超时有机会复位，再清除旧接收数据并发送一个新 SEQ 的请求。这只能恢复普通串口分包，不能证明已损坏的 USB 驱动没有滞留数据；失败时应重新连接后再明确 STOP/STATUS。
 
 使用者可以在日志记录时间、COM、CMD、SEQ、RESULT、ACTIVE、NEXT、FLAGS、异常；但 SEQ 不是认证或设备身份，XOR 也不是强 CRC。现场请使用短且可靠的 USB 连接。不要把某个 STATUS 成功当成发射高压、探头连接或接收数据正常的证明。
 
@@ -180,11 +205,11 @@ STOP 也服从同一个互斥锁，不能穿插正在发送的命令。正常驱
 
 1. 执行编译、自测；串口未连接时自测仍应通过。
 2. 真板上电无输出，连接 COM 和 STATUS 不触发高压，两个进程不能同时占用端口。
-3. 在低风险负载/测量条件下分别显式 START(1..4)，确认只有所选路发射，J11 有 50,000 次触发后自然停止。
-4. 工作中 START 另一通道、同通道 START、NEXT、STOP，核对切换/重计时/停止行为；S2 同样测试。
+3. 在低风险负载/测量条件下分别显式 START(1..4)，确认只有所选路持续发射，超过五秒仍有 J11，COMPLETED 始终为 0。
+4. 工作中 START 另一通道、同通道 START、NEXT、STOP，核对换路/重启触发帧/明确停止行为；S2 同样测试，但 S2 只换路、不停止。
 5. 工作中关闭 COM / 拔 USB，确认软件显示“未确认”，而不是假定停止；重新连接后先 STATUS/STOP，不自动 START。
 6. 模拟回包丢失、错误 COM、串口被占用，UI保持响应，START/NEXT 不自动补发。
-7. 用 AFE/TSW 实际确认先 Arm 后 START 可以保留第一个 J11，且五秒后采样数、触发数与通道标记一致。
+7. 用 AFE/TSW 实际确认先 Arm 后 START 可以保留第一个 J11，换路不重启接收，持续分块落盘无溢出；不确定换路边界正确标记，不冒充精确逐帧通道标签。结束录制前明确 STOP 并验证。
 
 ## 7. Microsoft API 依据
 

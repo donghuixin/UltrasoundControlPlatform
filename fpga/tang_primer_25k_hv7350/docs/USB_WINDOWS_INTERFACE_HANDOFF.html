@@ -11,7 +11,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 @media(max-width:760px){main{margin:0;padding:24px 18px}h1{font-size:25px}nav ul{columns:1}th,td{padding:8px}}
 @media print{body{background:white}main{margin:0;max-width:none;padding:0;border:0;box-shadow:none}h2,h3{break-after:avoid}tr,pre{break-inside:avoid}nav{display:none}a{color:inherit}.table-wrap{overflow:visible}}
 </style></head><body><main><div class="eyebrow">HV7350 · TANG PRIMER 25K · PROTOCOL HANDOFF</div>
-<p class="note">离线可读 · 文档版本1.0 · 2026-09-11 · USB仅控制发射，不传ADC数据</p>
+<p class="note">离线可读 · 文档版本1.1 · 连续发射版 · 2026-09-11 · USB仅控制发射，不传ADC数据</p>
 <nav aria-label="文档目录"><strong>开发交接目录</strong><ul><li><a href="#section-2">1. 开发者先看这十条</a></li>
 <li><a href="#section-3">2. 交付物和版本确认</a></li>
 <li><a href="#section-4">3. USB 连接与 Windows 串口初始化</a></li>
@@ -27,18 +27,18 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <li><a href="#section-29">13. 黄金向量：上位机单元测试可直接使用</a></li>
 <li><a href="#section-30">14. 本次验证范围</a></li></ul></nav>
 <h1 id="section-1">FPGA 四探头发射板：Windows 上位机 USB 接口交接文档</h1>
-<p>文档版本：1.0 / 2026-09-11。适用固件：<code>pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.fs</code>。</p>
+<p>文档版本：1.1（持续发射）/ 2026-09-11。适用固件：<code>pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.fs</code>。协议帧格式不变，但取消旧版5秒自动停止；不能将两版发射时长行为混用。</p>
 <p>本文是上位机开发接口约定，而不是仅供串口助手操作的说明。交付包含 FPGA RTL、已编译 FS/BIN、Python 客户端、C# 参考客户端、协议测试向量和离线测试。<strong>未在用户 Windows 电脑、真实串口或高压板上完成联调；不得把仿真通过等同于实际声学输出已验收。</strong></p>
 <h2 id="section-2">1. 开发者先看这十条</h2>
 <ol>
 <li>USB-C → 板载调试器 USB-UART → FPGA；Windows 上表现为 COM 串口，<strong>不是直接对 FPGA 使用 USB Bulk/HID 命令</strong>。</li>
 <li>串口配置：115200、8N1、无流控、DTR/RTS 关闭。B3 是 FPGA RX，C3 是 FPGA TX。</li>
 <li>请求固定 6 字节，回复固定 9 字节；均为原始二进制，无回车换行、无字符串编码。</li>
-<li><code>START(1..4)</code> 指定一路立即开始 5 秒发射；<code>NEXT</code> 等同一次 S2；<code>STOP</code> 停止；<code>STATUS</code> 查询。</li>
-<li>上电不发射。一次只发射一路，5 秒满后停机，不自动切到下一探头。</li>
-<li>重复 START（即使同一路、同一 SEQ）也会重新计时。<strong>SEQ 只是回显，不提供去重或“恰好执行一次”保证。</strong></li>
+<li><code>START(1..4)</code> 指定一路立即开始持续发射；<code>NEXT</code> 等同一次 S2；<code>STOP</code> 停止；<code>STATUS</code> 查询。</li>
+<li>上电不发射。一次只发射一路，直到按键/命令切换或 STOP；没有5秒自动停止，也不自动切到下一探头。READY运行亮，DONE恒灭。</li>
+<li>重复 START（即使同一路、同一 SEQ）也会重新产生 J11、重置 PRF 相位。<strong>SEQ 只是回显，不提供去重或“恰好执行一次”保证。</strong></li>
 <li>一次只允许一个普通请求在途；等匹配回复后再发送下一条。不要让 GUI 定时器排队积累 STATUS。</li>
-<li>超时/断线/部分写入后状态未知，禁止自动重发 START/NEXT；先显式 STATUS 或 STOP 恢复判断。关闭串口不等于停止发射。</li>
+<li>超时/断线/部分写入后状态未知，禁止自动重发 START/NEXT；先显式 STATUS 或 STOP 恢复判断。<strong>关闭串口/拔USB后，只要板卡仍供电就会一直发射，不能再等5秒自动停机。</strong></li>
 <li>AFE/TSW 必须先准备接收，再发 START；<strong>每次超声采样以 J11 硬件触发为准，不能使用 USB ACK 的到达时刻。</strong></li>
 <li>本协议不传 ADC 数据、不选择 AFE 通道、不上传采样、不提供每帧探头编号/会话 ID，也没有固件版本和板卡 ID 查询命令。</li>
 </ol>
@@ -51,7 +51,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 </tr>
 </thead>
 <tbody><tr>
-<td><code>burn_test/pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.fs</code></td>
+<td><code>burn_test/pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.fs</code></td>
 <td>Gowin 可烧录位流</td>
 </tr>
 <tr>
@@ -85,12 +85,13 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 </tbody></table></div>
 <p>目标 FPGA：<code>GW5A-LV25MG121NC1/I0</code>，50 MHz 系统时钟，3.3 V I/O。若换成不同型号/封装核心板，先核对器件和引脚约束，不能仅凭“25K”直接烧录。</p>
 <p>本交付 FS 的 SHA-256：</p>
-<pre><code class="language-text">a4dfe8bd5030e336c011ed138eb02b064a19936257fac45c7c2f24a8aea0be63
+<pre><code class="language-text">a9d1b8992abd552fc892cd0dcef2ba1092a25f14236accc9eaa43549509c07e5
 </code></pre>
 <p>Windows PowerShell 校验：</p>
-<pre><code class="language-powershell">Get-FileHash .\burn_test\pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.fs -Algorithm SHA256
+<pre><code class="language-powershell">Get-FileHash .\burn_test\pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.fs -Algorithm SHA256
 </code></pre>
-<p>这是文件版本校验，不能通过 STATUS 判断实际板上正在运行哪个 FS。协议“v1”是本文约定，不是帧内字段。旧八通道角度配置协议及 <code>configure_beamformer.py</code> 不适用于本版本。</p>
+<p>这是文件版本校验，不能通过 STATUS 判断实际板上正在运行哪个 FS。协议“v1”是线上帧格式约定，不是帧内字段；本文1.1是文档修订号，也不是设备版本回复。必须明确烧录本版，不要依靠运行中FLAGS=1区分旧5秒固件与本固件。旧八通道角度配置协议及 <code>configure_beamformer.py</code> 不适用于本版本。</p>
+<p>持续发射交付ZIP为 <code>handoff/FPGA_4PROBE_CONTINUOUS_WINDOWS_HANDOFF_20260911.zip</code>。旧5秒FS及 <code>FPGA_4PROBE_WINDOWS_HANDOFF_20260911.zip</code> 保留回退。2026-09-15整理发布标签为 <code>fpga-hv7350-4probe-continuous-usb-20260915</code>，见<a href="RELEASE_CONTINUOUS_20260915.md">发布说明</a>；固件构建日期及FS校验值不变，旧5秒标签不代表本版。</p>
 <h2 id="section-4">3. USB 连接与 Windows 串口初始化</h2>
 <h3 id="section-5">3.1 物理连接</h3>
 <p>使用 Tang Primer 25K Dock 的 <strong>USB-C 调试口</strong> 和支持数据传输的 USB 线。该调试器提供 JTAG 与 UART 功能；板上 USB-A 是 Host 口，不用于这套控制协议。<a href="https://wiki.sipeed.com/hardware/zh/tang/tang-primer-25k/primer-25k.html">Sipeed 官方板卡说明</a></p>
@@ -144,7 +145,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <p>打开 COM 本身不会复位 FPGA 或停止旧会话。SDK 在新连接后要求先 STATUS/STOP 确认状态，避免把“刚打开连接”当成“板卡已待机”。默认先用只读 STATUS，不自动发送 START。</p>
 <p>pySerial 使用有限 <code>timeout</code>/<code>write_timeout</code>；读操作可能返回少于请求长度的字节，必须累计解析，不能假设一次 read 就是一帧。<a href="https://pyserial.readthedocs.io/en/latest/pyserial_api.html">pySerial API</a></p>
 <h2 id="section-8">4. 固件行为与状态模型</h2>
-<h3 id="section-9">4.1 三种可报告状态</h3>
+<h3 id="section-9">4.1 两种可报告状态</h3>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -169,15 +170,8 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <td>亮 / 灭</td>
 <td>下一次 S2/NEXT 将启动的探头</td>
 </tr>
-<tr>
-<td>自然满 5 秒</td>
-<td>0</td>
-<td>02</td>
-<td>灭 / 亮</td>
-<td>保留游标</td>
-</tr>
 </tbody></table></div>
-<p>FLAGS 值使用十六进制，只有 bit0 和 bit1 有效，正常不会同时为 1。上位机还应维护一个本地 <strong>Unknown/未确认状态</strong>：它不是 FPGA 返回值，而是连接刚建立或通信异常后的软件状态。Unknown 时显示“状态未确认”，不能显示“已停止”。</p>
+<p>FLAGS 值使用十六进制，本版只有 bit0 可置1，bit1保留原 completed 的字段位置但恒为0，DONE恒灭。上位机不能再等待 completed=1 或 DONE 亮作为结束条件。上位机还应维护一个本地 <strong>Unknown/未确认状态</strong>：它不是 FPGA 返回值，而是连接刚建立或通信异常后的软件状态。Unknown 时显示“状态未确认”，不能显示“已停止”。</p>
 <h3 id="section-10">4.2 各操作的精确语义</h3>
 <div class="table-wrap"><table>
 <thead>
@@ -188,11 +182,11 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 </thead>
 <tbody><tr>
 <td>START N</td>
-<td>中止旧会话，选 N，开始全新 5 秒窗口；NEXT=N%4+1；清 DONE</td>
+<td>中止旧会话，选 N，重新产生 J11 并开始持续发射；NEXT=N%4+1</td>
 </tr>
 <tr>
 <td>START 当前 N</td>
-<td>也重新发 J11、重新计时，绝不是查询或保持运行</td>
+<td>也重新发 J11、重置 PRF 相位，绝不是查询或保持运行</td>
 </tr>
 <tr>
 <td>NEXT</td>
@@ -204,26 +198,26 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 </tr>
 <tr>
 <td>STOP</td>
-<td>中止输出、清 DONE；NEXT 不变；待机时也允许</td>
+<td>中止输出；NEXT 不变；待机时也允许</td>
 </tr>
 <tr>
 <td>STATUS</td>
 <td>不主动改变发射，返回处理时的状态快照</td>
 </tr>
 <tr>
-<td>自然计时结束</td>
-<td>停止输出、置 DONE；不自动启动下一路</td>
+<td>无操作或经过5秒</td>
+<td>原通道继续发射，不自动结束或换路</td>
 </tr>
 <tr>
 <td>无效命令/参数</td>
-<td>返回错误，不因该命令改变发射；原计时仍继续</td>
+<td>返回错误，不因该命令改变发射；原通道仍继续</td>
 </tr>
 </tbody></table></div>
 <p>按键消抖 20 ms，长按只产生一次有效事件，释放也经过消抖。S1 不使用。S2 不再是开停切换键。</p>
 <p>按键与 USB 共用同一游标。例如 USB <code>START 3</code> 后，下一次 S2/USB NEXT 启动 HV4。若事件恰好同一个系统时钟到达：有效 STOP 优先于 S2；有效指定 START 优先于 S2/NEXT。</p>
-<p>本版本没有禁用 S2 的 USB 命令。自动采集期间应约定不操作 S2；否则仅靠稀疏 STATUS 轮询不能完整重建每次物理按键和会话边界。STATUS/无效请求本身不改变状态，不代表同时发生的按键或自然到期不会改变状态。</p>
-<h3 id="section-11">4.3 5 秒和波形</h3>
-<p>从新会话第一枚<strong>对外 J11 上升沿</strong>计时，连续发射窗口为 250,000,000 个系统时钟（50 MHz 标称下 5 秒）。10 kHz PRF，完整会话为 50,000 次触发和 50,000 组 burst。实际秒数/频率还受板上振荡器精度影响。</p>
+<p>本版本没有禁用 S2 的 USB 命令。按键可用于持续录制期间人工切探头；但仅靠稀疏 STATUS 轮询不能完整重建每次物理按键和精确帧边界。需要上位机精确编排时，应统一使用 USB 切换并约定不操作 S2。STATUS/无效请求本身不改变状态，不代表同时发生的按键不会改变状态。</p>
+<h3 id="section-11">4.3 持续时间和波形</h3>
+<p>从新会话第一枚<strong>对外 J11 上升沿</strong>开始，以10 kHz PRF持续发射；本版没有发射总时长或总帧数上限。每个PRF周期为5,000个50 MHz系统时钟，标称100 μs。经过5秒仍继续发射，不能把50,000帧当成硬件自动停止点。实际频率还受板上振荡器精度影响。</p>
 <p>载波标称 2.2 MHz、2 cycles 正向主 burst、主 burst 结束后 140 ns 延时再加 100 ns 负向消振脉冲。只允许一个探头发射，HV5～HV8 固定不发射。未选中通道 PIN=NIN=0 对应原 HV7350 RTZ 状态，<strong>不是高阻隔离</strong>。</p>
 <h2 id="section-12">5. 请求帧：固定 6 字节</h2>
 <p>所有表内字节数值均为十六进制。各字段均为单字节，无多字节大小端问题；UART 按标准 LSB-first 发送。</p>
@@ -279,7 +273,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <td>10</td>
 <td>START</td>
 <td>01、02、03、04</td>
-<td>启动指定探头 5 秒</td>
+<td>启动指定探头持续发射</td>
 </tr>
 <tr>
 <td>11</td>
@@ -306,7 +300,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <ul>
 <li>推荐客户端每条请求递增序号，FF 后回到 00；重连也不把它当硬件会话 ID。</li>
 <li>固件不保存上一条 SEQ，不检测重复请求，不拒绝重复执行。</li>
-<li>同一 START 或 NEXT 原样重发仍会执行，可能打断/延长采集或切换探头。</li>
+<li>同一 START 或 NEXT 原样重发仍会执行，可能打断采集帧、重置PRF相位或切换探头。</li>
 <li>序号只有 8 位，不能用于跨长期会话、设备重连或跨设备唯一标识。</li>
 </ul>
 <h2 id="section-14">6. 回复帧：固定 9 字节</h2>
@@ -356,7 +350,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <tr>
 <td align="right">7</td>
 <td>FLAGS</td>
-<td>bit0=running，bit1=completed，bit2～7=0</td>
+<td>bit0=running；bit1保留原completed位置但本版恒0；bit2～7=0</td>
 </tr>
 <tr>
 <td align="right">8</td>
@@ -364,10 +358,10 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 <td>偏移 2～7 六个字节异或；不包含帧头</td>
 </tr>
 </tbody></table></div>
-<p>有效回复必须同时满足：帧头和长度正确、XOR 正确、CMD/SEQ 匹配本次请求、RESULT 在 0～2、ACTIVE 在 0～4、NEXT 在 1～4、保留位为零、running 与 ACTIVE 非零一致、running 与 completed 不能同时为真。</p>
+<p>有效回复必须同时满足：帧头和长度正确、XOR 正确、CMD/SEQ 匹配本次请求、RESULT 在 0～2、ACTIVE 在 0～4、NEXT 在 1～4、保留位为零、running 与 ACTIVE 非零一致。持续发射固件只产生FLAGS=00或01；客户端即使为兼容旧版保留completed属性，也不能据此等待本版自动结束。若收到completed=1，应核对实际烧录版本，不能当作本版正常结束。</p>
 <p>RESULT=01/02 是明确的拒绝结果，不是成功 ACK；同时携带有效状态快照。上位机可以更新显示，但应向调用者报告命令被拒绝，而不是进入“已启动”分支。</p>
 <p>错误 XOR、UART 起止位错误和超时半包被丢弃，<strong>没有错误回复</strong>。未知 CMD 则回复 RESULT=01（优先于参数错误）；已知 CMD 的非法 ARG 回复 RESULT=02。</p>
-<p>正常结束没有主动 DONE 推送；物理 S2 也没有独立按键事件消息。需要知道结束时，轮询 STATUS 并结合采集端真实数据计数。ACTIVE=0、completed=1 仅说明当前可见的最近状态是自然结束，不证明某个上位机记录的会话 ID 已完成。</p>
+<p>本版没有自然结束事件，也没有主动 DONE 推送；物理 S2 也没有独立按键事件消息。STOP后ACTIVE=0、FLAGS=0，采集结束应由上位机的明确停止操作或记录策略决定，并结合接收端实际数据计数。STATUS仅为快照，不证明某个上位机会话ID已经结束或中间未被S2切换。</p>
 <h3 id="section-15">6.1 回复解析算法</h3>
 <ol>
 <li>每次读取任意数量的 bytes，加入接收缓冲区。</li>
@@ -420,7 +414,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 </tr>
 <tr>
 <td>关闭应用/拔 USB</td>
-<td>不会即时停止 FPGA；若高压链路仍供电，当前会话会继续到原 5 秒期限</td>
+<td>不会停止 FPGA；只要板卡与高压链路仍供电就会一直发射，直到显式STOP或断电，不再有5秒期限</td>
 </tr>
 <tr>
 <td>打开串口失败/被占用</td>
@@ -444,9 +438,9 @@ py -3 scripts\control_probes.py --port COM5 start 2
 py -3 scripts\control_probes.py --port COM5 next
 py -3 scripts\control_probes.py --port COM5 stop
 </code></pre>
-<p>上面四条是独立操作示例，<strong>不是应当一口气粘贴执行的采集脚本</strong>；连续 START 会马上切换，不会自动各等 5 秒。COM5 是占位，使用实际枚举值。CLI 每次独立开关端口，仅用于人工调试，不应作为主程序的并发控制架构。</p>
+<p>上面四条是独立操作示例，<strong>不是应当一口气粘贴执行的采集脚本</strong>；连续 START 会马上切换，每路不会自动结束。COM5 是占位，使用实际枚举值。CLI 每次独立开关端口，仅用于人工调试，不应作为主程序的并发控制架构；CLI运行结束不代表停止发射。</p>
 <h3 id="section-22">8.2 Python/PyQt 集成</h3>
-<p>使用 <code>host/python/fpga_probe_client.py</code>，按其 README 初始化一次客户端并复用。提供连接、指定探头启动、NEXT、STOP、STATUS 和关闭方法。示例 <code>example_integration.py</code> 说明如何接入已有采集接口；其中 AFE/TSW API 只是适配位置，不是已经实现的采集驱动。</p>
+<p>使用 <code>host/python/fpga_probe_client.py</code>，按其 README 初始化一次客户端并复用。提供连接、指定探头启动、NEXT、STOP、STATUS 和关闭方法。示例 <code>example_integration.py</code> 的 <code>ContinuousAcquisition</code> 说明接收端只arm一次、持续读取数据、按需切换探头、最后显式停止的组织方式；其中 AFE/TSW API 只是适配位置，不是已经实现的采集驱动。</p>
 <p>SDK 对整个事务加锁并递增 SEQ；出现通信异常后禁止再次 START/NEXT，先 STATUS/STOP 恢复。已有 GUI 应在工作线程中调用，把结果通过信号/事件发回 UI。业务层记录用户点击时间、CMD/SEQ、ACK、探头编号、采集文件名，但不要把主机时间戳当超声发射时间戳。</p>
 <pre><code class="language-python">from fpga_probe_client import FpgaProbeClient
 
@@ -477,18 +471,19 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 <p>C++/Qt、LabVIEW 等不需要更改 FPGA：按第 5～7 节实现同一字节协议即可。不能把 SDK 方法名误认为线上 ASCII 命令。若语言与示例不一致，黄金向量仍可作为语言无关的单元测试输入。</p>
 <h2 id="section-24">9. 与 AFE/TSW 采集系统的联合控制</h2>
 <p>推荐让同一个上位机控制两个独立对象：<code>TxBoardClient</code>（此协议）和 <code>AcquisitionAdapter</code>（已有 AFE/TSW 驱动）。它们不是同一个 USB 数据通道。</p>
-<pre><code class="language-text">上位机创建会话记录、选定探头 N
-    → 配置对应 RX/ADC 通道与存储
-    → 接收端 arm，确认已经在等待 J11
-    → FPGA START N
+<pre><code class="language-text">上位机创建持续录制记录，配置 RX/ADC 通道和存储
+    → 接收端 arm，确认已经能持续接收并等待 J11
+    → 按 S2 启动 HV1，或 FPGA START N
     → 每枚 J11 硬件触发对应一次发射/采集
-    → 采集端记录有效触发/帧数，上位机串行轮询 STATUS
-    → FPGA 自然结束或显式 STOP
-    → 接收端 drain/完成写盘，验证帧数与质量
-    → 保存本探头结果，再开始下一探头
+    → 接收端持续写盘、记录有效触发/帧数；可串行轮询 STATUS
+    → 按 S2 或发送 NEXT/START 换探头，接收录制不重启
+    → 丢弃切换边界受影响的数据，继续录制
+    → 用户结束时，显式 FPGA STOP 并确认停机
+    → 接收端 drain/停止录制并完成写盘，验证有效帧和质量
 </code></pre>
-<p>业务层若要“一键采完四个探头”，可以按 1～4 循环执行上述步骤；这是上位机编排，FPGA本身仍不会自动跨探头扫描。不能简单依靠四个 <code>Sleep(5000)</code>：主机延迟、提前切换和丢触发都需要采集端计数与状态确认。</p>
-<p>完成一轮 5 秒理应有 50,000 组发射，但 STATUS 不返回已发帧数，必须由接收硬件/采集程序实际统计。若中途按 S2，可能截断原 J11、burst 或 J10，至少丢弃该旧边界帧，并标记旧会话未完整完成。协议不携带每帧通道 ID；高可靠自动采集期间不要混用物理按键。</p>
+<p>接收软件可以保持连续录制，探头驻留时间由按钮或上位机操作决定，不再绑定5秒或50,000帧。如果业务层以后需要按自定义时间自动切换，应由上位机显式发命令；FPGA本身不会自动跨探头扫描。本交付不改动已有接收UI或AFE/TSW驱动，也不保证现有接收设备已支持连续存储，需要接收侧自行确认带宽、缓冲和溢出检测。</p>
+<p>STATUS不返回已发帧数，必须由接收硬件/采集程序实际统计。切换或STOP可能截断原J11、burst或J10，至少丢弃受影响的旧边界帧；新探头的首枚完整J11仍领先其发射2 μs。不能假定切换前后触发间隔恰好100 μs，也不能只按固定10 kHz时间网格强行补齐、归属探头。</p>
+<p>协议没有每帧通道ID、按键事件时间戳或会话编号。人工S2切换时，低频STATUS只表示查询时正在发射哪一路，不能精准指出哪一帧发生切换，也可能漏掉查询间的多次切换。应保存观测到的状态与主机时间作为辅助记录，并排除无法确认归属的边界区间。即使USB控制切换，ACK到达时刻也不是首帧时刻；要求逐帧无歧义标签时，需要另行扩展硬件标记/协议和接收端，本版尚未提供。</p>
 <h3 id="section-25">9.1 每帧硬件时序</h3>
 <p>以选中探头对应的新 J11 上升沿为 0：</p>
 <div class="table-wrap"><table>
@@ -519,7 +514,7 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 <td>100.000 μs 起</td>
 </tr>
 </tbody></table></div>
-<p>所有输出共用寄存时序，通道切换有至少一拍 20 ns 全低间隔。切换会重置 PRF 相位，所以跨会话的 J11 间隔不保证 100 μs。J10是50 μs高电平的PRF参考，<strong>不是“5秒采集使能”或“ADC必须只采50μs”的定义</strong>。</p>
+<p>所有输出共用寄存时序，通道切换有至少一拍 20 ns 全低间隔。切换会重置 PRF 相位，所以跨会话的 J11 间隔不保证 100 μs。J10是50 μs高电平的PRF参考，<strong>不是持续录制使能，也不定义ADC必须只采50μs</strong>。</p>
 <p>J11只应接收端支持的、已核对电平与触发语义的数字输入。不能仅凭 AFE 或 TSW 的名称假定任意端口可外触发；其型号、采集固件和触发接口需要接收系统另行确认。</p>
 <h2 id="section-26">10. 接线速查</h2>
 <div class="table-wrap"><table>
@@ -583,18 +578,18 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 </tr>
 <tr>
 <td>A04</td>
-<td>一路不打断地运行</td>
-<td>READY约5秒；50,000枚J11；完成后DONE亮</td>
+<td>一路不打断地运行超过5秒</td>
+<td>继续10kHz输出，READY持续亮、DONE恒灭，无自动停止</td>
 </tr>
 <tr>
 <td>A05</td>
 <td>运行中 NEXT / S2</td>
-<td>旧路停止，新路开始新5秒与完整2μs提前触发</td>
+<td>旧路停止，新路持续发射，仍有完整2μs提前触发</td>
 </tr>
 <tr>
 <td>A06</td>
 <td>START同一路</td>
-<td>当前会话重启，计时重置，不是保持原期限</td>
+<td>当前会话重启、PRF相位重置，不是保持原波形相位</td>
 </tr>
 <tr>
 <td>A07</td>
@@ -608,8 +603,8 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 </tr>
 <tr>
 <td>A09</td>
-<td>自然完成后STATUS</td>
-<td>ACTIVE=0、FLAGS=2，NEXT保留</td>
+<td>运行超过5秒后STATUS</td>
+<td>ACTIVE仍是当前探头、FLAGS=1，NEXT不变</td>
 </tr>
 <tr>
 <td>A10</td>
@@ -623,21 +618,21 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 </tr>
 <tr>
 <td>A12</td>
-<td>ACK丢失/串口拔掉</td>
-<td>主机显示Unknown，不自动START重试；关闭串口不当作STOP</td>
+<td>ACK丢失/关闭串口；仅低压逻辑验证</td>
+<td>主机显示Unknown，不自动START重试；FPGA持续输出直到STOP或断电，无5秒兜底</td>
 </tr>
 <tr>
 <td>A13</td>
-<td>先arm接收再START</td>
-<td>首枚J11被采集，帧数和探头标签一致</td>
+<td>先arm接收再START，保持录制并切换</td>
+<td>首枚J11被采集；接收不中断，剔除切换边界数据，不声称STATUS提供逐帧标签</td>
 </tr>
 </tbody></table></div>
 <p>先关闭高压验证逻辑，再按已完成排障的安全接线恢复高压测量。USB STOP不是硬件急停；不应在未确认保护、接地和接收限幅的情况下进行人体测试。</p>
 <h2 id="section-28">12. 尚未提供的能力与后续扩展边界</h2>
 <p>当前没有：可变频率/PRF/持续时间、运行剩余时间、已发帧计数、会话编号、设备身份/固件版本查询、重复请求去重、S2禁用锁、异步开始/结束事件、ADC数据上传或接收多路复用控制。</p>
-<p>如以后需要这些能力，应新增明确协议命令和兼容性/版本判断，不能让上位机向保留字段写入新含义并假设当前FPGA支持。本交付的开发与验收范围是：<strong>Windows经USB串口选择HV1～HV4并启动/切换/停止5秒发射，同时为现有接收系统提供J11硬件同步。</strong></p>
+<p>如以后需要这些能力，应新增明确协议命令和兼容性/版本判断，不能让上位机向保留字段写入新含义并假设当前FPGA支持。本交付的开发与验收范围是：<strong>S2或Windows经USB串口选择HV1～HV4并启动/切换持续发射，USB STOP停止发射，同时为现有接收系统提供J11硬件同步。</strong></p>
 <h2 id="section-29">13. 黄金向量：上位机单元测试可直接使用</h2>
-<p>每行是独立用例，先建立相应初始状态，且处理时没有 S2/自然到期并发事件。<code>运行2→3</code> 表示 HV2 正在运行、NEXT=HV3。完整机器可读数据见 <code>tests/probe_protocol_vectors.json</code>。</p>
+<p>每行是独立用例，先建立相应初始状态，且处理时没有 S2 并发事件。<code>运行2→3</code> 表示 HV2 正在运行、NEXT=HV3。完整机器可读数据见 <code>tests/probe_protocol_vectors.json</code>。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -682,9 +677,9 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 <td><code>5A A5 12 06 00 00 02 00 16</code></td>
 </tr>
 <tr>
-<td>HV3已自然完成、NEXT=4；STATUS</td>
+<td>HV3持续运行、NEXT=4；STATUS</td>
 <td><code>A5 5A 13 00 07 14</code></td>
-<td><code>5A A5 13 07 00 00 04 02 12</code></td>
+<td><code>5A A5 13 07 00 03 04 01 12</code></td>
 </tr>
 <tr>
 <td>运行2→3；未知CMD=FE</td>
@@ -697,23 +692,22 @@ ProbeResponse status = await fpga.GetStatusAsync(); // 初次握手只读
 <td><code>5A A5 10 09 02 02 03 01 1B</code></td>
 </tr>
 <tr>
-<td>HV3已完成、NEXT=4；NEXT非法ARG=1</td>
+<td>HV3持续运行、NEXT=4；NEXT非法ARG=1</td>
 <td><code>A5 5A 11 01 0A 1A</code></td>
-<td><code>5A A5 11 0A 02 00 04 02 1F</code></td>
+<td><code>5A A5 11 0A 02 03 04 01 1F</code></td>
 </tr>
 <tr>
-<td>HV2运行；重放相同START/SEQ，重新计时</td>
+<td>HV2运行；重放相同START/SEQ，重置PRF相位</td>
 <td><code>A5 5A 10 02 02 10</code></td>
 <td><code>5A A5 10 02 00 02 03 01 12</code></td>
 </tr>
 </tbody></table></div>
-<p>可在任意语言中验证：编码字节完全相同、分多次接收仍解码成功、校验错误不接受、SEQ不匹配不接受、两个flag矛盾不接受、超时不自动再发命令。以上不是让实物板连续执行的脚本，尤其重复 START 用例会重置硬件发射窗口。</p>
+<p>可在任意语言中验证：编码字节完全相同、分多次接收仍解码成功、校验错误不接受、SEQ不匹配不接受、两个flag矛盾不接受、超时不自动再发命令。以上不是让实物板连续执行的脚本，尤其重复 START 用例会中断旧帧、重置硬件PRF相位。</p>
 <h2 id="section-30">14. 本次验证范围</h2>
 <ul>
-<li>已核对 RTL、引脚约束和上述 FS 的 SHA-256 对应关系；没有为了交接文档更改线上帧格式。</li>
-<li>已完成 Gowin 综合/布局布线，50 MHz约束下setup/hold违规端点均为0。</li>
-<li>本轮重跑真实 RTL：完整5秒，50,000次J11、100,000个正向脉冲、50,000个负尾；四路切换、开停、真实115200串口收发及错误输入回归通过。</li>
-<li>Python 客户端和协议向量通过离线假串口测试；不会在测试时启动实际发射。</li>
+<li>持续发射版已用Gowin V1.9.11.03 Education完成综合/布局布线并生成FS/BIN；50 MHz约束下Fmax=126.242 MHz，setup/hold违规端点均为0；本版FS的SHA-256见第2节。</li>
+<li>持续发射版RTL仿真通过：Icarus覆盖上电、按键消抖/长按、四路切换、同路重启、精确波形及真实115200波特率协议；Verilator逐时钟运行完整6秒（300,000,000时钟），产生60,000帧、120,000个正向脉冲和60,000个负尾，第60,001帧仍输出，随后经UART STOP停止。DONE/FLAGS[1]始终为0，未force或跳过运行计时；独立UART错误输入/队列/全双工回归通过。</li>
+<li>Python客户端、持续录制示例和协议向量离线测试共53项通过；覆盖一次arm、多次切换不重启接收、显式STOP、结束录制前确认空闲及错误不自动重试，测试不启动实际发射。</li>
 <li>C# 客户端提供离线自测工程，但当前macOS环境无.NET SDK，未完成C#编译及Windows串口验证；接入前由Windows开发环境执行其README中的构建/自测。</li>
 <li>未打开真实COM端口、未自动烧录、未声称完成AFE/TSW联合采集或高压实测。</li>
 </ul>

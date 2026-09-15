@@ -5,6 +5,7 @@ No serial dependency or hardware access is needed for --dry-run. Real serial
 access / --list requires pyserial (python -m pip install pyserial). Commands are
 sent ONCE: a timeout is ambiguous, so use status or stop, never blind START retry.
 The UART controls transmission only; it does not acquire AFE samples over USB.
+Continuous firmware has no automatic stop: closing USB leaves TX running.
 """
 from __future__ import annotations
 
@@ -58,6 +59,7 @@ class Response:
 
     @property
     def completed(self) -> bool:
+        """Legacy finite-session flag; always false on continuous firmware."""
         return bool(self.flags & 2)
 
 

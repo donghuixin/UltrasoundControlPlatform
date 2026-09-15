@@ -8,6 +8,7 @@ analysis/
 *.bin
 !fpga/tang_primer_25k_hv7350/artifacts/*.bin
 !fpga/tang_primer_25k_hv7350/burn_test/pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.bin
+!fpga/tang_primer_25k_hv7350/burn_test/pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.bin
 *.npy
 *.npz
 *.mat

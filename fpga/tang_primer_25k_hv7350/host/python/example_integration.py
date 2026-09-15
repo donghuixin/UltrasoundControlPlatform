@@ -1,95 +1,136 @@
-"""AFE-first integration skeleton. Running this file DOES NOT open any port.
+"""Continuous-recording integration skeleton; executing this file opens no port.
 
-Replace the AFE adapter with your acquisition SDK in the host application.
-Do not use a mock AFE that claims to be armed to authorize a real transmission.
+Supply a real AFE/TSW SDK adapter. Do not authorize a real transmission with a
+mock adapter that merely claims the receiver is armed. User actions drive each
+method: there is no automatic scan, STOP, timeout fallback or background thread.
 """
-import time
+import math
 from typing import Any, Protocol
 
 from fpga_probe_client import FpgaProbeClient, ProbeStatus
 
 
 class AcquisitionAdapter(Protocol):
-    """Your AFE/TSW SDK adapter, not implemented by the FPGA UART client."""
+    """Application-supplied acquisition API, separate from the FPGA UART."""
 
-    def arm_external_trigger(self, *, probe: int, trigger_count: int, prf_hz: int) -> bool:
-        """Configure/start buffering, and return True ONLY after hardware is ready."""
+    def arm_continuous_external_trigger(self, *, prf_hz: int) -> bool:
+        """Start indefinite recording; True ONLY after hardware is ready for J11.
+
+        Accept gaps while FPGA is idle, 10 kHz steady triggers and truncated /
+        irregularly spaced boundary pulses at a probe change. No fixed count.
+        """
         ...
 
-    def wait_and_read(self, *, timeout_s: float) -> Any:
-        """Return ONLY a verified full capture within timeout_s.
+    def read_verified_chunk(self, *, timeout_s: float) -> Any:
+        """Read a bounded chunk; validate records, overflow and drop indicators.
 
-        The adapter must verify exactly the armed trigger_count (50,000 here),
-        expected samples per record, and no overflow/dropped/invalid records.
-        Raise on any failure; the FPGA STATUS cannot validate captured samples.
+        Include acquisition timestamps / trigger indices. Do NOT assign an exact
+        probe ID from an ACK or STATUS: no channel marker exists on J11. Raise
+        on invalid samples; a read timeout does not imply FPGA transmission ended.
         """
         ...
 
     def cancel(self) -> None:
-        """Cancel capture and release buffers. This does NOT stop the FPGA."""
+        """Stop recording/release buffers; never stops the FPGA transmitter."""
         ...
 
 
-def acquire_one_probe(client: FpgaProbeClient, afe: AcquisitionAdapter, probe: int) -> tuple[ProbeStatus, Any]:
-    """Call from a worker thread after explicit user authorization to transmit.
+class ContinuousAcquisition:
+    """Call in an application-owned worker, only following explicit user actions.
 
-    Preconditions: client connected, correct firmware physically verified,
-    no active FPGA session, acquisition settings/load safe, and S2 not used
-    concurrently. AFE must accept J11 external rising edges and 10 kHz triggers.
-    Each full session has 50,000 triggers, with the burst beginning 2 us later.
-    Returns (final completed status, verified samples), NOT the initial START ACK.
-    Capture/completion deadline is approximately 7 s from sending START; a serial
-    transaction already in flight remains bounded by the client's own timeouts.
+    Connect the client first; physically verify firmware and acquisition settings.
+    Initial arming requires idle FPGA. Once armed, use S2 or select_probe / next_probe
+    without restarting acquisition. read_chunk does not wait for DONE or a count.
 
-    STATUS has no session ID: polling catches observed channel changes/stops,
-    but cannot prove absence of a brief S2 change/restart between polls. Do not
-    operate S2 or another client during this acquisition.
+    Continuous firmware has NO automatic expiry. USB disconnection, client.close,
+    a read error, process exit or cancellation leaves TX running. The application
+    must provide an explicit STOP action and a separate hardware safe-stop path.
+
+    STATUS is only a snapshot: S2 changes between polls cannot be reconstructed.
+    Store raw continuous data and mark uncertain channel-transition intervals.
+    This protocol cannot precisely label every recorded frame by probe number.
     """
-    if type(probe) is not int or probe not in range(1, 5):
-        raise ValueError("probe must be 1..4")
-    initial = client.get_status()
-    if initial.running:
-        raise RuntimeError("An FPGA session is active; explicitly STOP it before arming a new capture")
-    try:
-        if not afe.arm_external_trigger(probe=probe, trigger_count=50_000, prf_hz=10_000):
-            raise RuntimeError("AFE did not confirm ready: START was NOT sent")
-        deadline = time.monotonic() + 7.0
-        acknowledgement = client.start_probe(probe)  # Only AFTER the AFE has armed.
-        if not acknowledgement.running or acknowledgement.active_probe != probe:
-            raise RuntimeError("START ACK does not report the requested probe running; "
-                               "capture invalid, use explicit STATUS/STOP recovery")
-        # J11 may already have fired before this ACK arrives. It is NOT a trigger.
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Acquisition deadline expired after START; FPGA state needs explicit recovery")
-        samples = afe.wait_and_read(timeout_s=min(6.0, remaining))
-        # The last trigger arrives before the FPGA's 5 s session has ended.
-        # Do not hand the next probe to the caller while the old one is running.
-        while True:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("FPGA did not confirm normal completion within 7 s; "
-                                   "use explicit STATUS/STOP recovery")
-            final = client.get_status()
-            if time.monotonic() >= deadline:
-                raise TimeoutError("FPGA completion confirmation exceeded the acquisition deadline")
-            if final.running:
-                if final.active_probe != probe:
-                    raise RuntimeError("FPGA probe changed during acquisition; discard capture "
-                                       "and use explicit STATUS/STOP recovery")
-            elif final.completed:
-                return final, samples
-            else:
-                raise RuntimeError("FPGA stopped without normal completion; discard capture "
-                                   "and use explicit STATUS/STOP recovery")
-            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-    finally:
-        afe.cancel()
-        # Deliberately no automatic FPGA STOP/retry here. The application owns
-        # that policy. On an ambiguous START failure, show UNKNOWN and offer an
-        # explicit STOP or STATUS action. Closing USB alone does not stop TX.
+
+    def __init__(self, client: FpgaProbeClient, afe: AcquisitionAdapter) -> None:
+        self.client = client
+        self.afe = afe
+        self.recording = False  # Last successful arm, NOT a live hardware health flag.
+
+    def arm_recording(self) -> ProbeStatus:
+        """Explicitly prepare reception; sends STATUS only, never START or STOP."""
+        if self.recording:
+            raise RuntimeError("Recording is already armed; do not re-arm on probe switches")
+        initial = self.client.get_status()
+        if initial.running:
+            raise RuntimeError("FPGA is active; explicitly STOP before initially arming recording")
+        try:
+            if not self.afe.arm_continuous_external_trigger(prf_hz=10_000):
+                raise RuntimeError("AFE did not confirm ready: no START was sent")
+        except Exception:
+            self.afe.cancel()
+            raise
+        self.recording = True
+        return initial
+
+    def _require_recording(self) -> None:
+        if not self.recording:
+            raise RuntimeError("Arm the real receiver before selecting a transmitting probe")
+
+    def select_probe(self, probe: int) -> ProbeStatus:
+        """Explicit UI selection; replaces/restarts TX, leaves receiver running."""
+        if type(probe) is not int or probe not in range(1, 5):
+            raise ValueError("probe must be 1..4")
+        self._require_recording()
+        status = self.client.start_probe(probe)
+        if not status.running or status.active_probe != probe:
+            raise RuntimeError("START ACK does not report the requested probe; "
+                               "mark transition uncertain and use explicit STATUS/STOP recovery")
+        # First J11 may precede the ACK. It is NOT an acquisition timestamp.
+        return status
+
+    def next_probe(self) -> ProbeStatus:
+        """Explicit UI 'next' action; S2 changes the same next-probe cursor."""
+        self._require_recording()
+        status = self.client.next_probe()
+        if not status.running:
+            raise RuntimeError("NEXT ACK does not report running; use explicit STATUS/STOP recovery")
+        return status
+
+    def read_chunk(self, *, timeout_s: float = 1.0) -> Any:
+        """Read while recording continues; errors never silently retry/stop TX."""
+        self._require_recording()
+        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                or not math.isfinite(timeout_s) or timeout_s <= 0):
+            raise ValueError("timeout_s must be finite and positive")
+        return self.afe.read_verified_chunk(timeout_s=timeout_s)
+
+    def get_status(self) -> ProbeStatus:
+        """Caller may poll for UI/logging; not precise channel labels or timing."""
+        return self.client.get_status()
+
+    def stop_transmission(self) -> ProbeStatus:
+        """Explicit STOP; receiver remains armed so recording need not be interrupted."""
+        status = self.client.stop()
+        if status.running or status.active_probe != 0:
+            raise RuntimeError("STOP not confirmed; keep state uncertain and request recovery")
+        return status
+
+    def finish_recording(self) -> ProbeStatus:
+        """Explicitly close reception AFTER a confirmed idle snapshot; no auto STOP.
+
+        S2 must not be operated concurrently. A status query cannot lock the button;
+        safe physical shutdown needs the application's hardware procedure as well.
+        """
+        self._require_recording()
+        status = self.client.get_status()
+        if status.running:
+            raise RuntimeError("FPGA is still transmitting; explicitly STOP before closing reception")
+        self.afe.cancel()
+        self.recording = False
+        return status
 
 
 if __name__ == "__main__":
     print("Integration skeleton only: no USB port opened and no command sent.")
-    print("Import FpgaProbeClient and acquire_one_probe into your worker thread;")
-    print("supply a real AFE SDK adapter that confirms hardware armed BEFORE START.")
+    print("Use ContinuousAcquisition with a real receiver SDK in your application worker.")
+    print("Arm once; switch probes by explicit user actions; explicitly STOP to stop TX.")

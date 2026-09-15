@@ -4,7 +4,7 @@
 IO_LOC "clk" E2;
 IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
 
-// S2 starts/advances HV1..HV4; each press starts a fresh five-second session.
+// S2 starts/advances HV1..HV4; transmit continuously until switched or USB STOP.
 IO_LOC "s2" H10;
 IO_PORT "s2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN BANK_VCCIO=3.3;
 

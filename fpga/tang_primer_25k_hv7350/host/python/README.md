@@ -18,25 +18,44 @@ print(status.active_probe, status.next_probe, status.running, status.completed)
 
 # 先用 AFE / TSW 自己的 SDK 配置、启动采集并确认 external trigger 已 armed。
 # 然后由用户操作调用：
-# ack = client.start_probe(1)  # HV1 发射 5 s，中途调用会替换原会话
+# ack = client.start_probe(1)  # HV1 持续发射；中途调用会切换/重启所选路
 # ack = client.next_probe()   # 共享 S2 的下一通道顺序
 # ack = client.stop()         # 明确停止，不会自动重发
 
-status = client.get_status()  # 查询不会重新开始 5 s，也不会改变探头
+status = client.get_status()  # 查询不会重启发射帧，也不会改变探头
 client.close()                # 只关闭串口，不会停止 FPGA
 ```
 
 `with FpgaProbeClient("COM5") as client:` 会连接并在退出时关闭串口，但不会自动发任何命令。构造对象也不会打开串口。`connect()` 不带参数只连接；`connect(check_status=True)` 才查询一次状态。**新连接默认 UNKNOWN，START / NEXT 会被客户端拦截，必须先显式 STATUS 或 STOP 成功确认状态。**
 
-`example_integration.py` 提供可替换的 AFE SDK 接口及 `acquire_one_probe()`。直接运行该文件只打印说明，**不会打开串口或发送 START**；上位机明确调用函数才会发射。
+`example_integration.py` 提供可替换的 AFE SDK 接口及 `ContinuousAcquisition`。它替代旧版等待固定帧数和自然结束的 `acquire_one_probe()`；底层 `FpgaProbeClient` API 和线协议不变。直接运行示例文件只打印说明，**不会打开串口或发送 START**；上位机明确调用选择方法才会发射。
+
+```python
+from example_integration import ContinuousAcquisition
+
+# client 已连接，afe_adapter 是上位机实现的真实接收 SDK 适配器。
+recording = ContinuousAcquisition(client, afe_adapter)
+recording.arm_recording()      # 先 STATUS 确认空闲，再一次性开启持续接收；不发射
+# 以下分别绑定用户操作，并非自动顺序扫描：
+# recording.select_probe(1)   # 持续 HV1；也可直接按板上 S2
+# recording.select_probe(2)   # 切换 HV2，不取消/重启接收
+# recording.next_probe()      # 与 S2 共享下一路顺序
+# raw = recording.read_chunk(timeout_s=1.0)  # 工作线程反复分块保存，无固定帧数
+# snapshot = recording.get_status()         # 只作状态显示/日志，不是精确帧标签
+# recording.stop_transmission()             # 用户明确停止发射，接收仍继续
+# recording.finish_recording()              # 显式结束录制；先确认 FPGA 空闲
+```
+
+`read_chunk()` 的超时/溢出会向调用者抛异常，不会自动重发命令或停止 FPGA。需提供明确的“停止发射”和“结束录制”按钮；通信故障时显示 UNKNOWN 并由操作者处理。此骨架本身不创建线程，各动作由上位机调度；接收 SDK 应有独立持续入缓冲机制，不能依赖 GUI 轮询及时取数。`recording` 属性只表示曾成功 arm，并非实时硬件健康标志。
 
 ## 接收与触发必须这样安排
 
 - 串口只控制 FPGA 发射，不传回 ADC / 超声采样数据，也不会替你配置 AFE、TSW、采样率、增益或采集长度。
 - **AFE/采集卡先 armed，之后才发送 START。** ACK 返回前，第一条 J11 已经可能产生；不能等 ACK 后才启动采集，也不能把 ACK 当采样时标。
-- J11 每 100 µs 一个 200 ns 正脉冲，发射相对 J11 上升沿延后 2 µs。完整 5 s 会话包含 50,000 次触发；接收硬件是否支持持续触发、无间隙采集及足够缓冲，需要通过其 SDK 和硬件验证。
-- 中途 START、NEXT、S2 切换或 STOP 会截断旧会话；不能继续假定该会话仍有 50,000 条有效记录。切换边界记录应作废，新的通道需要重新正确标记和接收准备。
-- 程序关闭、`close()`、USB 断线、通信超时**不会立即停止 FPGA**；当前固件会自行完成剩余的 5 s，除非板上按键切换或新的 STOP 被成功接收。串口不是硬件急停。
+- 单路稳定运行时，J11 每 100 µs 一个 200 ns 正脉冲，发射相对 J11 上升沿延后 2 µs。当前固件没有时长/帧数上限；接收硬件是否支持持续触发、无间隙采集及足够缓冲，需要通过其 SDK 和硬件验证。
+- 中途 START、NEXT、S2 切换或 STOP 会截断旧帧；切换边界的 J11 可能被截短，新旧触发之间也不保证 100 µs。持续保存原始数据，丢弃或标为无效的边界记录，不必每换探头就重启录制。
+- **J11 不携带通道号，STATUS 也不推送 S2 事件。** 低频轮询无法恢复两次查询之间的所有按键变化，不能仅按 ACK 时间或最近的 STATUS 给每帧赋精确通道。记录命令前后时间、状态和采集硬件时标，将不确定边界单独标注；需要精确逐帧通道标记时须另行设计硬件/协议。
+- 程序关闭、`close()`、USB 断线、通信超时**不会停止 FPGA，且不再有五秒自动停止兜底**；持续输出直到成功接收 STOP、掉电/复位，或切换到另一路继续发射。串口不是硬件急停。结束录制前应明确 STOP 并确认，确认后也应避免他人按 S2 再次启用发射。
 
 ## 在 Qt 中使用
 
@@ -52,9 +71,9 @@ client.close()                # 只关闭串口，不会停止 FPGA
 | `active_probe` | 0 为空闲，1～4 为当前探头 |
 | `next_probe` | 1～4，下一次 NEXT / S2 要启用的探头 |
 | `running` | 发射会话运行中 |
-| `completed` | 正常 5 s 完成，START / NEXT / STOP 清除 |
+| `completed` | 仅保留旧限时固件兼容；当前持续版恒为 False，不可用它等待结束 |
 
-状态是命令被处理时的快照，不是实时量；S2、自动完成可能在 ACK 后改变它。要刷新显示，由上位机主动调用 `get_status()`；客户端不会创建后台轮询。RUNNING 和 COMPLETED 不能同时为 1；RUNNING 必须与 `active_probe != 0` 一致，客户端会验证这些条件。
+状态是命令被处理时的快照，不是实时量；S2 可能在 ACK 后改变它。要刷新显示，由上位机主动调用 `get_status()`；客户端不会创建后台轮询。RUNNING 和 COMPLETED 不能同时为 1；RUNNING 必须与 `active_probe != 0` 一致，客户端会验证这些条件。旧限时固件的 COMPLETED=1 仍可解码，但本示例不再依赖该字段。
 
 ## 错误与恢复策略
 
@@ -93,4 +112,4 @@ client.close()                # 只关闭串口，不会停止 FPGA
 | STOP | `12` | `00` |
 | STATUS | `13` | `00` |
 
-回复 9 字节：`5A A5 cmd seq result active next flags XOR(cmd,seq,result,active,next,flags)`。flags bit0=RUNNING、bit1=COMPLETED。上述数字用十六进制表达。客户端忽略噪声、错误校验帧和不匹配的旧回复，整个读取的超时不会因噪声而延长。
+回复 9 字节：`5A A5 cmd seq result active next flags XOR(cmd,seq,result,active,next,flags)`。flags bit0=RUNNING、bit1=旧 COMPLETED（当前固件恒 0）。上述数字用十六进制表达。客户端忽略噪声、错误校验帧和不匹配的旧回复，整个读取的超时不会因噪声而延长。

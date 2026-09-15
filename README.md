@@ -8,7 +8,7 @@
 - 1 MHz B-mode 成像、PW Doppler 可行性計算及短塊採集入口；
 - 5-level / Appendix C 3-level 接線、觸發、冷啟動、關機與排障文檔；
 - 本機已驗證的 HSDC 16 通道 INI 和 TX7316 1 MHz preset。
-- Tang Primer 25K + HV7350 四探頭5秒發射控制、USB串口SDK及可回退位流。
+- Tang Primer 25K + HV7350 四探頭持續發射控制、USB串口SDK及可回退位流（2.2 MHz、2 cycles、10 kHz PRF）。
 
 > 實驗室仿體專用。這套開放式高壓 EVM 連線未經醫療安全認證，不得貼人體或用於診斷。
 
@@ -30,7 +30,7 @@
 14. [可直接交給 Opus 的 JESD 去幀求助包](docs/12_OPUS_HELP_REQUEST_JESD_DEFRAMING.md)
 15. [2026-07-26 項目交接與恢復開發順序](docs/13_PROJECT_HANDOFF_2026-07-26.md)
 16. [Tang Primer 25K + HV7350 四探頭FPGA固件](fpga/tang_primer_25k_hv7350/README.md)
-17. [2026-09-11 Windows/USB接口交接與Python、C# SDK](fpga/tang_primer_25k_hv7350/README_WINDOWS_HANDOFF.md)
+17. [2026-09-15 持續發射版Windows/USB接口交接與Python、C# SDK](fpga/tang_primer_25k_hv7350/README_WINDOWS_HANDOFF.md)
 
 ## 目前硬件基線
 
@@ -90,7 +90,7 @@ configs/hsdc/                  HSDC Pro ADC/JESD profile
 configs/tx7316/                TX7316 1 MHz preset
 diagnostics/                   去識別化 QA 摘要（不含 raw BIN）
 docs/                          硬件和操作文檔
-fpga/tang_primer_25k_hv7350/  2.2 MHz/2-cycle四探頭5秒USB發射控制與交付包
+fpga/tang_primer_25k_hv7350/  2.2 MHz/2-cycle四探頭持續USB發射控制與交付包
 reconstruct_ultrasound.py      HSDC BIN 離線分析與成像
 auto_runs/                     本機採集輸出；不會提交到 Git
 ```

@@ -10,7 +10,7 @@ static void Usage() => Console.WriteLine(
     "       ProbeControl.Cli COM5 status|stop|next|start 1|shell\n" +
     "The start probe is 1..4. No command is sent without an explicit request.\n" +
     "shell keeps COM open: status, start 1..4, next, stop, quit.\n" +
-    "quit/disconnect is NOT STOP; a running session continues until its FPGA timeout.");
+    "quit/disconnect is NOT STOP; continuous TX has no automatic timeout. Send stop explicitly.");
 
 static async Task Execute(ProbeClient client, string[] words)
 {

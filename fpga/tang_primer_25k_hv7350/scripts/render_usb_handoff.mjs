@@ -29,7 +29,7 @@ nav{background:#edf5f5;border-left:4px solid #167c80;padding:16px 22px;margin:24
 @media(max-width:760px){main{margin:0;padding:24px 18px}h1{font-size:25px}nav ul{columns:1}th,td{padding:8px}}
 @media print{body{background:white}main{margin:0;max-width:none;padding:0;border:0;box-shadow:none}h2,h3{break-after:avoid}tr,pre{break-inside:avoid}nav{display:none}a{color:inherit}.table-wrap{overflow:visible}}
 </style></head><body><main><div class="eyebrow">HV7350 · TANG PRIMER 25K · PROTOCOL HANDOFF</div>
-<p class="note">离线可读 · 文档版本1.0 · 2026-09-11 · USB仅控制发射，不传ADC数据</p>
+<p class="note">离线可读 · 文档版本1.1 · 连续发射版 · 2026-09-11 · USB仅控制发射，不传ADC数据</p>
 <nav aria-label="文档目录"><strong>开发交接目录</strong><ul>${toc}</ul></nav>
 ${content}<p class="note">此HTML由同目录Markdown机械生成；接口变更时应同时更新源码、向量、客户端和本文。</p>
 </main></body></html>`;

@@ -1,14 +1,14 @@
 `timescale 1ns/1ps
 
-// External waveform assertions run with a 300 us (three-frame) session.
-// The UART instance uses the production 115200 baud rate and a 20 ms session.
+// External waveform assertions exercise continuous sessions and interruptions.
+// The UART instance uses the production 115200 baud rate.
 module tb_probe_sequence;
     reg clk = 0;
     always #10 clk = ~clk;
     reg s2 = 0;
     wire ready, done, j11, j10, uart_tx, sdram_off;
     wire [7:0] p, n;
-    top #(.S2_DEBOUNCE_TICKS(4), .SESSION_TICKS(15000)) dut (
+    top #(.S2_DEBOUNCE_TICKS(4)) dut (
         .clk(clk), .s2(s2), .uart_rx_b3(1'b1), .uart_tx_c3(uart_tx),
         .led_ready(ready), .led_done(done), .sync_prf_j11(j11), .sync_prf_j10(j10),
         .tx1_pin_b2(p[0]), .tx1_nin_f2(n[0]), .tx2_pin_e1(p[1]), .tx2_nin_e3(n[1]),
@@ -21,7 +21,7 @@ module tb_probe_sequence;
     reg serial_rx = 1;
     wire serial_tx, u_ready, u_done, u_j11, u_j10;
     wire [7:0] up, un;
-    top #(.S2_DEBOUNCE_TICKS(4), .SESSION_TICKS(1000000)) uart_dut (
+    top #(.S2_DEBOUNCE_TICKS(4)) uart_dut (
         .clk(clk), .s2(1'b0), .uart_rx_b3(serial_rx), .uart_tx_c3(serial_tx),
         .led_ready(u_ready), .led_done(u_done), .sync_prf_j11(u_j11), .sync_prf_j10(u_j10),
         .tx1_pin_b2(up[0]), .tx1_nin_f2(un[0]), .tx2_pin_e1(up[1]), .tx2_nin_e3(un[1]),
@@ -61,6 +61,9 @@ module tb_probe_sequence;
         check((p[7:4] | n[7:4] | up[7:4] | un[7:4]) === 4'b0,
               "HV5..HV8 must always be inactive");
         check((p & n) === 8'b0 && (up & un) === 8'b0, "PIN/NIN must not overlap");
+        check(!done && !u_done, "continuous firmware must never assert DONE");
+        check(dut.response_flags[7:1] == 0 && uart_dut.response_flags[7:1] == 0,
+              "continuous status must not advertise natural completion");
         if (ready && !previous_active) begin
             start_cycle = cycle;
             session_triggers = 0;
@@ -177,25 +180,24 @@ module tb_probe_sequence;
         repeat (16) @(negedge clk);
         check(!ready && dut.next_channel == 0, "button glitch accepted");
 
-        // Hold across natural completion: exactly one session, three frames.
+        // Holding the button must preserve one continuous session and cursor.
         s2 = 1;
         wait(ready); #3;
         check(dut.selected_channel == 0, "first press must select HV1");
         first_cycle = cycle;
-        wait(done); #3;
-        check(!ready && cycle - first_cycle == 15000, "session must last exactly SESSION_TICKS");
-        check(session_triggers == 3, "300 us session must contain exactly three complete frames");
-        repeat (100) @(negedge clk);
-        check(!ready && accepted_starts == 1, "holding S2 retriggered after completion");
+        repeat (16000) @(negedge clk);
+        check(ready && !done && accepted_starts == 1, "holding S2 stopped/retriggered the session");
+        check(session_triggers == 4 && dut.selected_channel == 0,
+              "held S2 must retain HV1 across successive PRF frames");
         s2 = 0; repeat (16) @(negedge clk);
-        $display("PASS: power-up, debounce, long press, three frames, precise session expiry");
+        $display("PASS: power-up, debounce, held button, continuous frames, DONE remains off");
 
         button_press(); check(ready && dut.selected_channel == 1, "second press must select HV2");
         // Arrange debounce acceptance within the current positive burst.
         wait(dut.frame_tick == 103); @(negedge clk);
         check(p == 8'h02, "expected HV2 burst before button interruption");
         button_press(); check(ready && dut.selected_channel == 2, "running press must immediately select HV3");
-        check(dut.session_count < 40, "running press did not reset five-second session timer");
+        check(dut.frame_tick < 40, "running press did not restart the PRF frame");
         button_press(); check(dut.selected_channel == 3, "fourth press must select HV4");
         button_press(); check(dut.selected_channel == 0, "fifth press must wrap to HV1");
         $display("PASS: HV1-HV4 wrap, running-button interruption, full fresh pretrigger");
@@ -238,15 +240,17 @@ module tb_probe_sequence;
     end
 endmodule
 
-// Default 250,000,000-clock limit is checked separately from the short-session
-// regression. +FULL_DURATION runs every clock and checks all 50,000 frames.
+// Continuous-duration regression: never deposits/forces a timer value.
+// +FULL_DURATION runs every clock for six seconds, beyond the former 5 s limit,
+// checks 60,000 complete frames, and then stops through the real UART receiver.
 module tb_probe_duration;
     reg clk = 0, s2 = 0;
+    reg serial_rx = 1;
     always #10 clk = ~clk;
     wire ready, done, j11, j10;
     wire [7:0] p, n;
     top #(.S2_DEBOUNCE_TICKS(4)) dut (
-        .clk(clk), .s2(s2), .uart_rx_b3(1'b1), .uart_tx_c3(),
+        .clk(clk), .s2(s2), .uart_rx_b3(serial_rx), .uart_tx_c3(),
         .led_ready(ready), .led_done(done), .sync_prf_j11(j11), .sync_prf_j10(j10),
         .tx1_pin_b2(p[0]), .tx1_nin_f2(n[0]), .tx2_pin_e1(p[1]), .tx2_nin_e3(n[1]),
         .tx3_pin_j1(p[2]), .tx3_nin_g4(n[2]), .tx4_pin_h1(p[3]), .tx4_nin_k7(n[3]),
@@ -255,6 +259,8 @@ module tb_probe_duration;
         .sdram_disable_n_k9()
     );
     integer triggers = 0, positives = 0, negatives = 0;
+    integer run_ticks, expected_frames;
+    reg require_running = 0;
     time started_at;
     always @(posedge j11) triggers = triggers + 1;
     always @(posedge p[0]) positives = positives + 1;
@@ -263,36 +269,69 @@ module tb_probe_duration;
         if ((p[7:1] | n[7:1]) !== 7'b0)
             $fatal(1, "unselected output activated during default-duration run");
     end
+    // Event-based guards observe every change without resuming an otherwise
+    // idle testbench coroutine on all 300 million clock cycles.
+    always @(posedge done)
+        $fatal(1, "continuous session asserted DONE");
+    always @(dut.response_flags) begin
+        if (dut.response_flags[7:1] != 0)
+            $fatal(1, "continuous session reported natural completion");
+    end
+    always @(negedge ready) begin
+        if (require_running)
+            $fatal(1, "continuous output stopped before explicit STOP");
+    end
+    localparam integer BIT_TICKS = 434;
+    task send_byte(input [7:0] value);
+        integer bit_index;
+        @(negedge clk); serial_rx = 0;
+        repeat (BIT_TICKS) @(negedge clk);
+        for (bit_index = 0; bit_index < 8; bit_index = bit_index + 1) begin
+            serial_rx = value[bit_index];
+            repeat (BIT_TICKS) @(negedge clk);
+        end
+        serial_rx = 1;
+        repeat (BIT_TICKS) @(negedge clk);
+    endtask
     initial begin
-        if (dut.SESSION_TICKS != 250000000) $fatal(1, "default duration is not five seconds");
+        run_ticks = $test$plusargs("FULL_DURATION") ? 300000000 : 100000;
+        expected_frames = run_ticks / 5000;
         repeat (16) @(negedge clk);
         s2 = 1; wait(ready); started_at = $time;
-        if ($test$plusargs("FULL_DURATION")) begin
-            wait(done); #2;
-            if ($time - started_at != 64'd5000000002)
-                $fatal(1, "full session length mismatch: %0t", $time - started_at);
-            if (triggers != 50000 || positives != 100000 || negatives != 50000)
-                $fatal(1, "full session counts mismatch: triggers=%0d positive=%0d negative=%0d",
-                       triggers, positives, negatives);
-            $display("PASS: full five seconds, 50,000 triggers, 100,000 positive pulses, 50,000 damping pulses");
-        end else begin
-            repeat (200) @(negedge clk);
-            // Deposit near the actual 32-bit boundary; no reduced duration parameter.
-            dut.session_count = 249999998;
-            @(posedge clk); #2;
-            if (!ready || done || dut.session_count != 249999999)
-                $fatal(1, "session expired one clock too early near default boundary");
-            @(posedge clk); #2;
-            if (!ready || done || dut.session_active)
-                $fatal(1, "registered last session clock was omitted");
-            @(posedge clk); #2;
-            if (ready || !done || {j11,j10,p,n} != 0)
-                $fatal(1, "session failed to stop exactly at default boundary");
-            $display("PASS: default 250,000,000-clock boundary and silent expiry");
-        end
+        require_running = 1;
+        // Inspect the final clock before the next PRF frame. All expected
+        // frames have completed; no extra trigger has yet been counted.
+        // The FPGA's real 50 MHz clock continues throughout this delay; no
+        // clocks, counters or internal state are skipped or forced.
+        #((64'(run_ticks) - 1) * 20 + 2);
+        if ($time - started_at != (64'(run_ticks) - 1) * 20 + 2)
+            $fatal(1, "duration measurement mismatch: %0t", $time - started_at);
+        if (!ready || done || dut.selected_channel != 0 || dut.next_channel != 1)
+            $fatal(1, "held S2 changed/stopped the continuous session");
+        if (triggers != expected_frames || positives != expected_frames * 2 ||
+            negatives != expected_frames)
+            $fatal(1, "continuous counts mismatch: triggers=%0d positive=%0d negative=%0d",
+                   triggers, positives, negatives);
+        @(posedge clk); #2;
+        if (!ready || !j11 || triggers != expected_frames + 1)
+            $fatal(1, "continuous session failed to start the following frame");
+        $display("PASS: %0d complete continuous frames (%0d clocks), still running afterward",
+                 expected_frames, run_ticks);
+        require_running = 0;
+        // Explicit STOP traverses the production UART at 115200 baud. Do not
+        // force internal command/timer state in this long-duration regression.
+        send_byte(8'hA5); send_byte(8'h5A); send_byte(8'h12);
+        send_byte(8'h00); send_byte(8'h55); send_byte(8'h47);
+        if (ready || done || {j11,j10,p,n} != 0)
+            $fatal(1, "real UART STOP failed after continuous operation");
         repeat (100) @(negedge clk);
-        if (ready || !done || {j11,j10,p,n} != 0)
-            $fatal(1, "held S2 retriggered completed default-duration session");
+        if (ready || done || {j11,j10,p,n} != 0)
+            $fatal(1, "held S2 retriggered explicitly stopped session");
+        $display("PASS: explicit UART STOP after continuous run; held S2 does not restart");
         $finish;
+    end
+    initial begin
+        #7000000000;
+        $fatal(1, "continuous duration simulation watchdog expired");
     end
 endmodule

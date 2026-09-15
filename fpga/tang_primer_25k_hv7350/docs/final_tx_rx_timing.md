@@ -1,7 +1,7 @@
 # Final Transmit Waveform and Receive-Window Control
 
 > Historical eight-channel autostart behavior. See [four-probe control](four_probe_control.md)
-> for the active five-second, one-probe-at-a-time firmware. The individual burst
+> for the active continuous, one-probe-at-a-time firmware. The individual burst
 > timing below remains valid; automatic startup and all-channel operation do not.
 
 This document describes the final fixed FPGA build selected from the 2.0,

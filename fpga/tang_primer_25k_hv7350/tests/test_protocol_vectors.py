@@ -1,7 +1,7 @@
 """Independent golden-frame checks; no serial, FPGA, or external dependency.
 
 The reference transition below is deliberately separate from the production
-encoder. It models only request effects, without concurrent button/expiry events.
+encoder. It models only request effects, without concurrent button events.
 RTL tests remain responsible for cycle timing and actual UART parsing behavior.
 """
 import importlib.util
@@ -28,7 +28,7 @@ def independent_xor(values):
 
 
 def transition(initial, command, argument):
-    """Return result, public state and timer action for a valid wire request."""
+    """Return result, public state and frame action for a valid wire request."""
     state = dict(initial)
     if command not in (0x10, 0x11, 0x12, 0x13):
         return 1, state, "none"
@@ -53,6 +53,8 @@ class GoldenVectorTests(unittest.TestCase):
         self.assertEqual(VECTORS["schema_version"], 1)
         self.assertEqual(len(vectors), 12)
         self.assertEqual(len({v["id"] for v in vectors}), len(vectors))
+        self.assertTrue(all(not v["expected"]["completed"] for v in vectors))
+        self.assertTrue(all(not v["initial"]["completed"] for v in vectors))
         self.assertEqual(
             {v["argument"] for v in vectors if v["command"] == 0x10 and not v["result"]},
             {1, 2, 3, 4})

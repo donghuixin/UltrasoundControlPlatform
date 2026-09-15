@@ -14,6 +14,7 @@ public sealed record ProbeResponse(
     byte ActiveProbe, byte NextProbe, byte Flags)
 {
     public bool Running => (Flags & 1) != 0;
+    // Legacy finite-session flag; always false on continuous firmware.
     public bool Completed => (Flags & 2) != 0;
 }
 

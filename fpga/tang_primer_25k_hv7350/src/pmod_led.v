@@ -1,10 +1,10 @@
 // Four independent HV7350 probes, Tang Primer 25K, 50 MHz / 3.3 V I/O.
 // Power-up is silent. S2 advances HV1 -> HV2 -> HV3 -> HV4 -> HV1,
-// starting a fresh five-second, 10 kHz session on exactly one output.
-// A press during a session aborts it and starts the next probe. UART can
+// continuously transmitting at 10 kHz on exactly one output until switched
+// or explicitly stopped. A press aborts the old burst and starts the next probe. UART can
 // START a selected probe, NEXT, STOP, or query STATUS; see four_probe_control.md.
-// READY is high while running; DONE latches high only on normal five-second
-// completion. S1 is unused. HV5..HV8 always have PIN=NIN=0.
+// READY is high while running; DONE stays low (no timed completion).
+// There is no inactivity/disconnect timeout. S1 is unused; HV5..HV8 stay low.
 // The measured waveform is unchanged: 2.2 MHz, two positive RTZ cycles,
 // 140 ns post-burst delay and one 100 ns negative damping pulse.
 // J11 is 200 ns wide and leads each burst/J10 rising edge by exactly 2 us.
@@ -12,7 +12,6 @@ module top #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer UART_BAUD = 115_200,
     parameter integer S2_DEBOUNCE_TICKS = CLK_FREQ_HZ / 50,
-    parameter integer SESSION_TICKS = CLK_FREQ_HZ * 5,
     parameter integer PRF_PERIOD_TICKS = CLK_FREQ_HZ / 10_000,
     parameter integer PRF_HALF_TICKS = PRF_PERIOD_TICKS / 2,
     parameter integer PRETRIGGER_TICKS = CLK_FREQ_HZ / 500_000,
@@ -117,10 +116,8 @@ wire argument_valid = (command == 8'h10) ?
 // One shared pulse engine feeds a one-of-four output selector, so the four
 // probes cannot run simultaneously. Unselected PIN=NIN=0 means RTZ, NOT Hi-Z.
 reg session_active = 1'b0;
-reg session_completed = 1'b0;
 reg [1:0] selected_channel = 2'd0;
 reg [1:0] next_channel = 2'd0;
-reg [31:0] session_count = 32'd0;
 reg [15:0] frame_tick = 16'd0;
 
 // UART STOP wins over a simultaneous button event. UART START wins over NEXT.
@@ -137,32 +134,20 @@ wire frame_start = channel_run_enable &&
 always @(posedge clk) begin
     if (uart_stop) begin
         session_active <= 1'b0;
-        session_completed <= 1'b0;
-        session_count <= 32'd0;
         frame_tick <= 16'd0;
     end
     else if (request_start) begin
         selected_channel <= requested_channel;
         next_channel <= requested_channel + 2'd1;
         session_active <= 1'b1;
-        session_completed <= 1'b0;
-        session_count <= 32'd0;
         frame_tick <= 16'd0;
     end
     else if (session_active) begin
-        if (session_count == SESSION_TICKS - 1) begin
-            session_active <= 1'b0;
-            session_completed <= 1'b1;
-            session_count <= 32'd0;
+        // Only the PRF counter wraps. Elapsed runtime never stops transmission.
+        if (frame_tick == PRF_PERIOD_TICKS - 1)
             frame_tick <= 16'd0;
-        end
-        else begin
-            session_count <= session_count + 1'b1;
-            if (frame_tick == PRF_PERIOD_TICKS - 1)
-                frame_tick <= 16'd0;
-            else
-                frame_tick <= frame_tick + 1'b1;
-        end
+        else
+            frame_tick <= frame_tick + 1'b1;
     end
 end
 
@@ -187,7 +172,8 @@ always @(posedge clk) begin
         response_active <= session_active ?
                            ({6'd0, selected_channel} + 8'd1) : 8'd0;
         response_next <= {6'd0, next_channel} + 8'd1;
-        response_flags <= {6'd0, session_completed, session_active};
+        // Legacy completed flag (bit 1) is always zero in continuous mode.
+        response_flags <= {7'd0, session_active};
     end
 end
 
@@ -204,7 +190,7 @@ hv7350_tx_channel #(.DAMP_PULSE_TICKS(DAMP_PULSE_TICKS)) pulse_generator (
 // a binary frame counter or selector must never directly drive the HV pulser:
 // unequal propagation delays could otherwise create unintended narrow pulses.
 // This adds the SAME one-clock latency to J11, J10, PIN, NIN and READY, leaving
-// all relative timing and the five-second external session length unchanged.
+// all relative timing unchanged. There is no five-second session timer.
 // Restart/STOP samples run_enable=0 and clears the old outputs on that edge;
 // a new session begins with a full low clock followed by a fresh J11 pulse.
 reg [3:0] pin_registered = 4'd0;
@@ -215,7 +201,7 @@ reg ready_registered = 1'b0;
 reg done_registered = 1'b0;
 always @(posedge clk) begin
     ready_registered <= channel_run_enable;
-    done_registered <= session_completed;
+    done_registered <= 1'b0;
     j11_registered <= channel_run_enable && (frame_tick < TRIGGER_PULSE_TICKS);
     j10_registered <= channel_run_enable &&
                       (frame_tick >= PRETRIGGER_TICKS) &&

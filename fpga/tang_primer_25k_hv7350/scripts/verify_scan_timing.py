@@ -23,7 +23,6 @@ def main():
     assert clk == 50_000_000 and cycles == 2 and delay == 7
     assert abs(word * clk / (1 << 32) - 2_200_000) < 0.01
     for expression in (
-        "SESSION_TICKS = CLK_FREQ_HZ * 5",
         "PRF_PERIOD_TICKS = CLK_FREQ_HZ / 10_000",
         "PRF_HALF_TICKS = PRF_PERIOD_TICKS / 2",
         "PRETRIGGER_TICKS = CLK_FREQ_HZ / 500_000",
@@ -32,6 +31,8 @@ def main():
         "reg session_active = 1'b0;",
         "assign led_ready = ready_registered;",
         "assign led_done = done_registered;",
+        "done_registered <= 1'b0;",
+        "response_flags <= {7'd0, session_active};",
         "assign sync_prf_j11 = j11_registered;",
         "assign sync_prf_j10 = j10_registered;",
         "ready_registered <= channel_run_enable;",
@@ -41,6 +42,8 @@ def main():
         "assign nin_out = damp_active;",
     ):
         assert expression in source, expression
+    assert "SESSION_TICKS" not in source
+    assert "session_count" not in source
 
     # Reconstruct the retained two-cycle NCO waveform, one 20 ns tick at a time.
     phase = completed = tick = 0
@@ -60,10 +63,7 @@ def main():
     assert damping_start == 153  # J11 + 3060 ns.
     assert damping_start + clk // 10_000_000 == 158
     prf_ticks = clk // 10_000
-    session_ticks = clk * 5
-    assert session_ticks == 250_000_000
-    assert session_ticks // prf_ticks == 50_000
-    assert session_ticks % prf_ticks == 0
+    assert prf_ticks == 5000
     assert pretrigger + prf_ticks // 2 < prf_ticks
 
     for channel, pin, nin in (
@@ -81,7 +81,7 @@ def main():
     print("PASS (static/model): fixed 2.2 MHz / 2 cycles / 140 ns wait / 100 ns negative tail")
     print("PASS (static/model): PIN at J11+[2000,2240), [2460,2700) ns; NIN at [3060,3160) ns")
     print("PASS (static/model): J11 200 ns / 10 kHz, burst/J10 start 2 us later")
-    print("PASS (static/model): five seconds = 250000000 clocks = 50000 complete frames")
+    print("PASS (static/model): continuous 10 kHz PRF; former five-second expiry timer removed")
     print("PASS (static): power-up idle, one-of-four output mapping, HV5..HV8 disabled")
     print("Actual RTL behavior must also pass scripts/verify_probe_sequence.py.")
 

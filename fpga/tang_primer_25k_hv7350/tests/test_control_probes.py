@@ -54,7 +54,7 @@ class ControlProtocolTests(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 control.encode_request(*args)
 
-    def test_response_valid_and_completed(self):
+    def test_response_valid_and_legacy_completed_compatibility(self):
         response = control.decode_response(reply(), 0x10, 0x42)
         self.assertEqual(response.active, 1)
         self.assertTrue(response.running)

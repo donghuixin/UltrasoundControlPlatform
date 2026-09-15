@@ -101,7 +101,7 @@ class FakeFactory:
 class ClientTests(unittest.TestCase):
     def make_client(self, **kwargs):
         factory = FakeFactory()
-        connection = client.FpgaProbeClient("COM5", timeout=0.01, sequence_start=0,
+        connection = client.FpgaProbeClient("COM5", timeout=kwargs.pop("timeout", 0.01), sequence_start=0,
                                             transport_factory=factory, **kwargs)
         self.addCleanup(connection.close)
         return connection, factory.transport, factory
@@ -321,7 +321,8 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(connection.state_unknown)
 
     def test_many_threads_share_one_outstanding_request(self):
-        connection, transport, _ = self.make_client()
+        # Verify serialization independently of OS scheduling jitter / CPU load.
+        connection, transport, _ = self.make_client(timeout=1.0)
         connection.connect()
         original_read = transport.read
         def slower_read(size):
@@ -335,7 +336,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([frame[4] for frame in transport.writes], list(range(32)))
 
     def test_stop_waits_for_existing_transaction_not_interleaved(self):
-        connection, transport, _ = self.make_client()
+        connection, transport, _ = self.make_client(timeout=1.0)
         connection.connect()
         read_entered, release_read = threading.Event(), threading.Event()
         original_read = transport.read
@@ -370,6 +371,7 @@ class CodecTests(unittest.TestCase):
     def test_golden_packets(self):
         self.assertEqual(client.encode_request(client.START, 4, 0), bytes.fromhex("A5 5A 10 04 00 14"))
         self.assertEqual(client.encode_request(client.STOP, 0, 0xA5), bytes.fromhex("A5 5A 12 00 A5 B7"))
+        # Compatibility only: the new continuous firmware never emits bit 1.
         status = client.decode_response(response(active=0, next_probe=3, flags=2))
         self.assertTrue(status.completed)
         self.assertFalse(status.running)
@@ -398,88 +400,165 @@ class IntegrationExampleTests(unittest.TestCase):
     def status(self, active=0, completed=False):
         return client.ProbeStatus(client.STATUS, 0, 0, active, 1, 1 if active else (2 if completed else 0))
 
-    def test_arm_before_start_waits_for_normal_completion_and_returns_final_status(self):
-        log = []
-        controller, afe = mock.Mock(), mock.Mock()
-        snapshots = iter([self.status(), self.status(active=2), self.status(completed=True)])
-        controller.get_status.side_effect = lambda: (log.append("status"), next(snapshots))[1]
-        controller.start_probe.side_effect = lambda probe: (log.append("start"), self.status(active=probe))[1]
-        afe.arm_external_trigger.side_effect = lambda **kwargs: (log.append("arm"), True)[1]
-        afe.wait_and_read.side_effect = lambda **kwargs: (log.append("samples"), "verified_samples")[1]
-        with mock.patch.object(self.example.time, "monotonic", return_value=0.0), \
-             mock.patch.object(self.example.time, "sleep") as sleep:
-            status, samples = self.example.acquire_one_probe(controller, afe, 2)
-        self.assertEqual(log, ["status", "arm", "start", "samples", "status", "status"])
-        self.assertTrue(status.completed)
-        self.assertFalse(status.running)
-        self.assertEqual(samples, "verified_samples")
-        sleep.assert_called_once_with(0.1)
-        afe.arm_external_trigger.assert_called_once_with(probe=2, trigger_count=50_000, prf_hz=10_000)
-        afe.cancel.assert_called_once()
-        controller.stop.assert_not_called()
-
-    def test_bad_start_ack_is_rejected_before_reading_samples(self):
-        for acknowledgement in (self.status(), self.status(active=3)):
-            with self.subTest(acknowledgement=acknowledgement):
-                controller, afe = mock.Mock(), mock.Mock()
-                controller.get_status.return_value = self.status()
-                controller.start_probe.return_value = acknowledgement
-                afe.arm_external_trigger.return_value = True
-                with self.assertRaisesRegex(RuntimeError, "START ACK"):
-                    self.example.acquire_one_probe(controller, afe, 2)
-                afe.wait_and_read.assert_not_called()
-                afe.cancel.assert_called_once()
-                controller.stop.assert_not_called()
-
-    def test_observed_channel_change_or_abnormal_stop_discards_capture(self):
-        for final in (self.status(active=3), self.status()):
-            with self.subTest(final=final):
-                controller, afe = mock.Mock(), mock.Mock()
-                controller.get_status.side_effect = [self.status(), final]
-                controller.start_probe.return_value = self.status(active=2)
-                afe.arm_external_trigger.return_value = True
-                with self.assertRaisesRegex(RuntimeError, "discard capture"):
-                    self.example.acquire_one_probe(controller, afe, 2)
-                afe.cancel.assert_called_once()
-                controller.stop.assert_not_called()
-
-    def test_completion_deadline_expires_without_stop_or_start_retry(self):
-        controller, afe = mock.Mock(), mock.Mock()
-        controller.get_status.side_effect = [self.status(), self.status(active=2)]
-        controller.start_probe.return_value = self.status(active=2)
-        afe.arm_external_trigger.return_value = True
-        with mock.patch.object(self.example.time, "monotonic", side_effect=[0.0, 0.001, 7.001]), \
-             self.assertRaisesRegex(TimeoutError, "within 7 s"):
-            self.example.acquire_one_probe(controller, afe, 2)
-        controller.start_probe.assert_called_once_with(2)
-        controller.stop.assert_not_called()
-        afe.cancel.assert_called_once()
-
-    def test_afe_capture_validation_error_is_propagated(self):
+    def make_recording(self, *, armed=True):
         controller, afe = mock.Mock(), mock.Mock()
         controller.get_status.return_value = self.status()
-        controller.start_probe.return_value = self.status(active=2)
-        afe.arm_external_trigger.return_value = True
-        afe.wait_and_read.side_effect = RuntimeError("AFE overflow or fewer than 50000 triggers")
-        with self.assertRaisesRegex(RuntimeError, "AFE overflow"):
-            self.example.acquire_one_probe(controller, afe, 2)
-        controller.get_status.assert_called_once()  # No false completion check after bad samples.
-        controller.stop.assert_not_called()
-        afe.cancel.assert_called_once()
+        controller.start_probe.side_effect = lambda probe: self.status(active=probe)
+        afe.arm_continuous_external_trigger.return_value = True
+        recording = self.example.ContinuousAcquisition(controller, afe)
+        if armed:
+            recording.arm_recording()
+        return recording, controller, afe
 
-    def test_failed_arm_never_sends_start_and_always_cancels(self):
+    def test_construction_and_arm_do_not_start_or_stop_transmission(self):
+        recording, controller, afe = self.make_recording(armed=False)
+        self.assertEqual(controller.mock_calls, [])
+        self.assertEqual(afe.mock_calls, [])
+        self.assertFalse(recording.recording)
+        self.assertFalse(recording.arm_recording().running)
+        controller.get_status.assert_called_once()
+        controller.start_probe.assert_not_called()
+        controller.next_probe.assert_not_called()
+        controller.stop.assert_not_called()
+        afe.arm_continuous_external_trigger.assert_called_once_with(prf_hz=10_000)
+        self.assertTrue(recording.recording)
+
+    def test_switches_and_chunk_reads_preserve_continuous_recording(self):
+        recording, controller, afe = self.make_recording()
+        afe.read_verified_chunk.side_effect = ["hv1raw", "boundaryraw", "hv3raw"]
+        self.assertEqual(recording.select_probe(1).active_probe, 1)
+        self.assertEqual(recording.read_chunk(), "hv1raw")
+        self.assertEqual(recording.select_probe(2).active_probe, 2)
+        self.assertEqual(recording.read_chunk(), "boundaryraw")
+        controller.next_probe.return_value = self.status(active=3)
+        self.assertEqual(recording.next_probe().active_probe, 3)
+        self.assertEqual(recording.read_chunk(), "hv3raw")
+        self.assertEqual(controller.start_probe.call_args_list, [mock.call(1), mock.call(2)])
+        controller.next_probe.assert_called_once()
+        controller.get_status.assert_called_once()  # No finite-DONE polling.
+        afe.arm_continuous_external_trigger.assert_called_once()
+        afe.cancel.assert_not_called()
+        controller.stop.assert_not_called()
+
+    def test_unarmed_select_next_read_finish_are_blocked(self):
+        recording, controller, afe = self.make_recording(armed=False)
+        for action in (lambda: recording.select_probe(1), recording.next_probe,
+                       recording.read_chunk, recording.finish_recording):
+            with self.subTest(action=action), self.assertRaisesRegex(RuntimeError, "Arm"):
+                action()
+        self.assertEqual(controller.mock_calls, [])
+        self.assertEqual(afe.mock_calls, [])
+
+    def test_invalid_probe_and_chunk_timeout_are_rejected_before_io(self):
+        recording, controller, afe = self.make_recording()
+        for probe in (0, 5, True, 1.5):
+            with self.subTest(probe=probe), self.assertRaises(ValueError):
+                recording.select_probe(probe)
+        for timeout in (0, -1, True, float("nan"), float("inf"), "1"):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                recording.read_chunk(timeout_s=timeout)
+        controller.start_probe.assert_not_called()
+        afe.read_verified_chunk.assert_not_called()
+
+    def test_active_fpga_or_second_arm_is_rejected_without_automatic_stop(self):
+        recording, controller, afe = self.make_recording(armed=False)
+        controller.get_status.return_value = self.status(active=1)
+        with self.assertRaisesRegex(RuntimeError, "explicitly STOP"):
+            recording.arm_recording()
+        afe.arm_continuous_external_trigger.assert_not_called()
+        controller.stop.assert_not_called()
+        controller.get_status.return_value = self.status()
+        recording.arm_recording()
+        with self.assertRaisesRegex(RuntimeError, "already armed"):
+            recording.arm_recording()
+        afe.arm_continuous_external_trigger.assert_called_once()
+
+    def test_bad_start_or_next_ack_never_stops_receiver_or_retries(self):
+        for acknowledgement in (self.status(), self.status(active=3)):
+            with self.subTest(acknowledgement=acknowledgement):
+                recording, controller, afe = self.make_recording()
+                controller.start_probe.side_effect = None
+                controller.start_probe.return_value = acknowledgement
+                with self.assertRaisesRegex(RuntimeError, "START ACK"):
+                    recording.select_probe(2)
+                controller.start_probe.assert_called_once_with(2)
+                controller.stop.assert_not_called()
+                afe.cancel.assert_not_called()
+        recording, controller, afe = self.make_recording()
+        controller.next_probe.return_value = self.status()
+        with self.assertRaisesRegex(RuntimeError, "NEXT ACK"):
+            recording.next_probe()
+        controller.next_probe.assert_called_once()
+        controller.stop.assert_not_called()
+        afe.cancel.assert_not_called()
+
+    def test_ambiguous_start_failure_has_no_automatic_retry_or_stop(self):
+        recording, controller, afe = self.make_recording()
+        controller.start_probe.side_effect = client.ResponseTimeout("unknown state")
+        with self.assertRaises(client.ResponseTimeout):
+            recording.select_probe(2)
+        controller.start_probe.assert_called_once_with(2)
+        controller.stop.assert_not_called()
+        afe.cancel.assert_not_called()
+
+    def test_read_error_or_timeout_is_not_treated_as_transmission_completion(self):
+        for failure in (RuntimeError("AFE overflow"), TimeoutError("no trigger in this chunk")):
+            recording, controller, afe = self.make_recording()
+            afe.read_verified_chunk.side_effect = failure
+            with self.subTest(failure=failure), self.assertRaises(type(failure)):
+                recording.read_chunk(timeout_s=0.5)
+            afe.read_verified_chunk.assert_called_once_with(timeout_s=0.5)
+            afe.cancel.assert_not_called()
+            controller.stop.assert_not_called()
+            controller.get_status.assert_called_once()
+
+    def test_explicit_stop_keeps_receiver_armed_and_finish_only_closes_after_idle(self):
+        recording, controller, afe = self.make_recording()
+        controller.stop.return_value = self.status()
+        self.assertFalse(recording.stop_transmission().running)
+        controller.stop.assert_called_once()
+        afe.cancel.assert_not_called()
+        self.assertTrue(recording.recording)
+        self.assertFalse(recording.finish_recording().running)
+        afe.cancel.assert_called_once()
+        self.assertFalse(recording.recording)
+
+    def test_stop_is_allowed_without_receiver_and_failed_stop_or_active_finish_does_not_close_it(self):
+        recording, controller, afe = self.make_recording(armed=False)
+        controller.stop.return_value = self.status()
+        recording.stop_transmission()
+        controller.stop.return_value = self.status(active=1)
+        with self.assertRaisesRegex(RuntimeError, "STOP not confirmed"):
+            recording.stop_transmission()
+        recording.arm_recording()
+        controller.get_status.return_value = self.status(active=1)
+        with self.assertRaisesRegex(RuntimeError, "explicitly STOP"):
+            recording.finish_recording()
+        afe.cancel.assert_not_called()
+        self.assertTrue(recording.recording)
+
+    def test_status_poll_returns_snapshot_without_restarting_or_relabeling_capture(self):
+        recording, controller, afe = self.make_recording()
+        controller.get_status.return_value = self.status(active=4)
+        self.assertEqual(recording.get_status().active_probe, 4)
+        controller.start_probe.assert_not_called()
+        controller.next_probe.assert_not_called()
+        controller.stop.assert_not_called()
+        afe.cancel.assert_not_called()
+
+    def test_failed_arm_never_sends_start_and_cleans_up_acquisition_only(self):
         for fails_by_exception in (False, True):
-            controller, afe = mock.Mock(), mock.Mock()
-            controller.get_status.return_value = self.status()
+            recording, controller, afe = self.make_recording(armed=False)
             if fails_by_exception:
-                afe.arm_external_trigger.side_effect = RuntimeError("arm error")
+                afe.arm_continuous_external_trigger.side_effect = RuntimeError("arm error")
             else:
-                afe.arm_external_trigger.return_value = False
+                afe.arm_continuous_external_trigger.return_value = False
             with self.assertRaises(RuntimeError):
-                self.example.acquire_one_probe(controller, afe, 2)
+                recording.arm_recording()
             controller.start_probe.assert_not_called()
             controller.stop.assert_not_called()
             afe.cancel.assert_called_once()
+            self.assertFalse(recording.recording)
 
 
 if __name__ == "__main__":

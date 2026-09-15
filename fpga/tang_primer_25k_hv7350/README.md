@@ -1,33 +1,34 @@
 # Tang Primer 25K + HV7350 四探头发射控制
 
-当前交付版：`fpga-hv7350-4probe-5s-usb-20260911`。同一块HV7350的TX1～TX4各接一个独立探头，一次只发射一路；不是四块HV板，也不再八路自动发射。
+当前交付版：`fpga-hv7350-4probe-continuous-usb-20260915`。同一块HV7350的TX1～TX4各接一个独立探头，一次只发射一路；取消5秒自动停止，按键选择后持续发射。
 
 ## 下载与Windows交接
 
-- [完整交付ZIP](handoff/FPGA_4PROBE_WINDOWS_HANDOFF_20260911.zip)：烧录文件、源码、协议、Python/C#客户端、测试和回退包。
+- [完整交付ZIP](handoff/FPGA_4PROBE_CONTINUOUS_WINDOWS_HANDOFF_20260911.zip)：烧录文件、源码、协议、Python/C#客户端、测试和回退包。
+- [2026-09-15持续发射版发布说明](docs/RELEASE_CONTINUOUS_20260915.md)。
 - [从这里开始](README_WINDOWS_HANDOFF.md)。
 - [USB/Windows接口合同](docs/USB_WINDOWS_INTERFACE_HANDOFF.md) / [离线HTML](docs/USB_WINDOWS_INTERFACE_HANDOFF.html)。HTML下载后用浏览器打开。
 - [Python/PyQt客户端](host/python/README.md) / [C#/.NET参考客户端](host/windows_dotnet/README.md)。
-- [固件构建与位流校验](burn_test/README_four_probe_20260911.md)。
+- [固件构建与位流校验](burn_test/README_four_probe_continuous_20260911.md)。
 
 USB只传控制命令，不传ADC数据。本次提供集成SDK和接口合同，尚未把功能接入仓库既有Windows采集UI；AFE/TSW接收仍使用其自身驱动。
 
 ## 当前固件行为
 
 - 上电静默。S2每次有效按下启动HV1→HV2→HV3→HV4→HV1；长按只触发一次。
-- 每次发射5秒、PRF 10 kHz；期间再次按下立即中断前一路，切换下一路并重新计时。
+- 所选一路以PRF 10 kHz持续重复burst，不再计时5秒；再次按下S2立即中断前一路，切换下一路并重新产生完整提前触发。
 - 2.2 MHz、2 cycles、正极性RTZ；完整主burst结束后等待140 ns，再输出100 ns负向消振脉冲。VNN设定为−30 V。
 - 只有选定一路发射，其余通道PIN/NIN为0。这不是接收端模拟多路复用器。
-- READY表示正在发射；DONE表示自然完成5秒。STOP清除DONE；S1不用。
+- READY表示正在发射；DONE恒灭、completed标志恒0；S1不用。S2只换路，停止需USB STOP。
 - 每帧J11输出200 ns触发脉冲；J11上升沿后2 µs开始主burst。J10从主burst开始拉高50 µs。
 - USB-C调试口虚拟串口：115200、8N1、无流控，FPGA RX=B3、TX=C3。
 - USB支持START(指定HV1～HV4)、NEXT、STOP和STATUS。字节协议及错误处理以接口合同为准。
 
 ## 烧录、验证与重建
 
-使用Gowin Programmer加载 `burn_test/pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.fs`。目标器件：`GW5A-LV25MG121NC1/I0`。先核对核心板，在VPP/VNN关闭时检查3.3 V时序。
+使用Gowin Programmer加载 `burn_test/pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.fs`。目标器件：`GW5A-LV25MG121NC1/I0`。先核对核心板，在VPP/VNN关闭时检查3.3 V时序。
 
-FS SHA-256：`a4dfe8bd5030e336c011ed138eb02b064a19936257fac45c7c2f24a8aea0be63`。
+FS SHA-256：`a9d1b8992abd552fc892cd0dcef2ba1092a25f14236accc9eaa43549509c07e5`。
 
 `MANIFEST_SHA256.txt`校验ZIP交付文件；仓库额外的首页、Git忽略规则和ZIP自身不在此清单中。从本目录运行：
 
@@ -38,16 +39,17 @@ python3 scripts/verify_probe_sequence.py --full-duration
 gw_sh scripts/build_fpga.tcl
 ```
 
-RTL仿真需要Icarus/Verilator，重建需要Gowin。本版综合/布局布线通过，50 MHz约束下setup/hold违规端点为0；完整5秒RTL仿真及47项Python测试通过。C#源码尚未在开发机编译；Windows编译、真板USB联调和实际超声输出仍需验收。没有自动烧录或发送START。
+RTL仿真需要Icarus/Verilator，重建需要Gowin。相同RTL/FS此前综合/布局布线通过，50 MHz约束下Fmax=126.242 MHz、setup/hold违规端点为0；完整6秒RTL仿真确认60,000帧后仍继续、随后UART STOP成功。本次发布重新核对hash并通过53项Python测试，没有更改位流或重复6秒长仿真。C#源码尚未在开发机编译；Windows编译、真板USB联调和实际超声输出仍需验收。没有自动烧录或发送START。
 
 ## 回退与集成边界
 
+- 旧四探头5秒版保留在标签`fpga-hv7350-4probe-5s-usb-20260911`，其FS/BIN、源码备份`burn_test/source_before_continuous_4probe_20260911.tar.gz`和旧交付ZIP不覆盖。
 - 上一版2.2 MHz、2 cycles、140 ns消振、八路上电自动发射FS保留在`artifacts/`及`burn_test/`；旧源码在`burn_test/source_before_four_probe_20260911.tar.gz`。
 - 更早2 MHz纯正极性版本仍在`artifacts/`，原标签`fpga-hv7350-2mhz-2cycles-positive-20260829`保留。历史文档保留实验依据，当前控制以四探头接口合同为准。
 - 先arm接收端，再发START；ACK到达前可能已开始发射，不能用ACK作采样触发。
 - 超时表示结果未知，SEQ不去重，不能自动重发START/NEXT。
-- 关闭串口或拔USB不立即停止；固件在该次5秒到期停止，需提前停止时显式STOP。
-- S2仍可切通道，协议不能锁定按键；采集期间不操作S2，切换边界数据应丢弃。
+- 关闭串口或拔USB不会停止；只要FPGA及高压仍供电就一直发射，结束需显式STOP或硬件断电，不再有5秒兜底。
+- 接收可持续录制，按S2或USB换路不需要重启接收；切换边界数据应丢弃。协议不能锁定S2，也不提供逐帧探头标签，STATUS只提供当前快照。
 - 这是实验室高压超声平台，不是医疗认证设备。软件STOP不等于硬件急停，VNN也不钳制压电端瞬时电压。回退前关闭高压，旧autostart位流配置完成即发射。
 
 ## 历史版本说明（仅供回退）

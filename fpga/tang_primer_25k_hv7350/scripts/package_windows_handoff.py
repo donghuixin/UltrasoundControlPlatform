@@ -9,8 +9,8 @@ import hashlib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = "FPGA_4PROBE_WINDOWS_HANDOFF_20260911"
-EXPECTED_FS_SHA256 = "a4dfe8bd5030e336c011ed138eb02b064a19936257fac45c7c2f24a8aea0be63"
+NAME = "FPGA_4PROBE_CONTINUOUS_WINDOWS_HANDOFF_20260911"
+EXPECTED_FS_SHA256 = "a9d1b8992abd552fc892cd0dcef2ba1092a25f14236accc9eaa43549509c07e5"
 
 
 def main():
@@ -31,6 +31,10 @@ def main():
         raise SystemExit("Render the updated USB handoff HTML before packaging.")
     files.add(html)
     for name in (
+        "pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.fs",
+        "pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.bin",
+        "README_four_probe_continuous_20260911.md",
+        "source_before_continuous_4probe_20260911.tar.gz",
         "pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.fs",
         "pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.bin",
         "README_four_probe_20260911.md",
@@ -38,7 +42,7 @@ def main():
         "source_before_four_probe_20260911.tar.gz",
     ):
         files.add(ROOT / "burn_test" / name)
-    new_fs = ROOT / "burn_test/pmod_led_4probe_5s_2p2mhz_2cycles_10khz_uart.fs"
+    new_fs = ROOT / "burn_test/pmod_led_4probe_continuous_2p2mhz_2cycles_10khz_uart.fs"
     if hashlib.sha256(new_fs.read_bytes()).hexdigest() != EXPECTED_FS_SHA256:
         raise SystemExit("Firmware differs from the approved/documented release; update and re-verify it first.")
     entries = []

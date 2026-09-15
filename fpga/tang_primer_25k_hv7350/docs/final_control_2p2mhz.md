@@ -1,7 +1,7 @@
 # Final Fixed Transmit and Damping Control
 
 > Historical eight-channel autostart build. The active project now uses the
-> [four-probe / five-second controller](four_probe_control.md). Its per-burst
+> [four-probe continuous controller](four_probe_control.md). Its per-burst
 > waveform is retained, but the startup, button and LED behavior below is historical.
 
 Selected from the 2.0, 2.2, and 2.4 MHz measurements on 2026-08-29.

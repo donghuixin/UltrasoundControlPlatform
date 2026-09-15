@@ -1,6 +1,11 @@
 # 8-Channel HV7350 Beamformer
 
-## Current FPGA Behavior
+> Historical eight-channel autostart build, not the active firmware. See
+> [four-probe continuous control](four_probe_control.md) for current S2/USB,
+> startup and LED behavior. The old angle-configuration protocol below does
+> not control the current firmware.
+
+## Historical FPGA Behavior
 
 - Transmission starts automatically as soon as FPGA configuration completes;
   no button press is required. READY and DONE remain steadily on while output

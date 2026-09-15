@@ -77,6 +77,7 @@ class ProbeStatus:
 
     @property
     def completed(self) -> bool:
+        """Legacy finite-session flag; always False on continuous firmware."""
         return bool(self.flags & 0x02)
 
 
@@ -170,7 +171,7 @@ class FpgaProbeClient:
         """True before a valid reply, after ambiguous I/O, or after close().
 
         False means the latest reply was valid, not that its snapshot is current:
-        S2 or automatic completion can change the FPGA at any time.
+        S2 can change the FPGA at any time (legacy firmware can also expire).
         """
         with self._lock:
             return self._state_unknown
@@ -231,11 +232,11 @@ class FpgaProbeClient:
         self.close()
 
     def start_probe(self, probe: int) -> ProbeStatus:
-        """Start/restart for 5 s; requires known state and AFE armed by caller."""
+        """Start/restart continuous TX; requires known state and caller-armed AFE."""
         return self._execute(START, probe)
 
     def next_probe(self) -> ProbeStatus:
-        """Immediately replace the session with the shared next probe for 5 s."""
+        """Immediately switch to the shared next probe and transmit continuously."""
         return self._execute(NEXT, 0)
 
     def stop(self) -> ProbeStatus:

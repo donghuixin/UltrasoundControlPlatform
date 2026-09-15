@@ -3,7 +3,7 @@
   "protocol": "HV7350 four-probe UART, 115200 8N1",
   "assumptions": [
     "Each vector is independent; establish its initial state before sending the request.",
-    "No concurrent S2 event or natural session expiry occurs while the request is processed.",
+    "No concurrent S2 event occurs while the request is processed; continuous firmware never expires automatically.",
     "Frames are raw binary bytes, not ASCII hex text, with no CR/LF appended.",
     "Sequence IDs are echoed, not deduplicated. Duplicate START restarts the session.",
     "Golden state transitions model command behavior; full-cycle RTL tests are separate."
@@ -77,7 +77,7 @@
     },
     {
       "id": "stop_keep_next",
-      "setup": "STOP HV1. The cursor remains HV2 and completed is cleared.",
+      "setup": "STOP HV1. The cursor remains HV2; completed stays zero.",
       "initial": {"active": 1, "next": 2, "completed": false},
       "command": 18, "argument": 0, "sequence": 6,
       "request_hex": "A5 5A 12 00 06 14",
@@ -87,14 +87,14 @@
       "session_effect": "stop"
     },
     {
-      "id": "completed_status",
-      "setup": "HV3 previously ran for its complete five seconds; no new START or STOP followed.",
-      "initial": {"active": 0, "next": 4, "completed": true},
+      "id": "hv3_running_status",
+      "setup": "HV3 continues running until an explicit switch or STOP, even after five seconds.",
+      "initial": {"active": 3, "next": 4, "completed": false},
       "command": 19, "argument": 0, "sequence": 7,
       "request_hex": "A5 5A 13 00 07 14",
-      "response_hex": "5A A5 13 07 00 00 04 02 12",
+      "response_hex": "5A A5 13 07 00 03 04 01 12",
       "result": 0,
-      "expected": {"active": 0, "next": 4, "completed": true},
+      "expected": {"active": 3, "next": 4, "completed": false},
       "session_effect": "none"
     },
     {
@@ -121,18 +121,18 @@
     },
     {
       "id": "invalid_next_arg",
-      "setup": "HV3 previously completed; NEXT requires argument zero, so argument one is rejected.",
-      "initial": {"active": 0, "next": 4, "completed": true},
+      "setup": "HV3 is continuously running; NEXT requires argument zero, so argument one is rejected.",
+      "initial": {"active": 3, "next": 4, "completed": false},
       "command": 17, "argument": 1, "sequence": 10,
       "request_hex": "A5 5A 11 01 0A 1A",
-      "response_hex": "5A A5 11 0A 02 00 04 02 1F",
+      "response_hex": "5A A5 11 0A 02 03 04 01 1F",
       "result": 2,
-      "expected": {"active": 0, "next": 4, "completed": true},
+      "expected": {"active": 3, "next": 4, "completed": false},
       "session_effect": "none"
     },
     {
       "id": "duplicate_start_seq",
-      "setup": "HV2 is still running after start_hv2; replay that exact request and sequence. Timer restarts from zero.",
+      "setup": "HV2 is still running after start_hv2; replay that exact request and sequence. The current frame is interrupted and a fresh trigger starts.",
       "initial": {"active": 2, "next": 3, "completed": false},
       "command": 16, "argument": 2, "sequence": 2,
       "request_hex": "A5 5A 10 02 02 10",
