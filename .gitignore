@@ -5,6 +5,8 @@ capture_*/
 comparison_*/
 analysis/
 **/analysis/
+analysis_*/
+**/analysis_*/
 *.bin
 *.npy
 *.npz

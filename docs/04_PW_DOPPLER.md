@@ -83,3 +83,9 @@ zUnambiguous = c / (2 PRF)
 UI的PW Doppler頁能計算PRF/深度/速度/容量並啟動固定角度短塊採集。它另有`TI EXT_TRIG 分塊重播 · 非連續`卡片，可按TI建議為相位鎖定、每次完全相同的測試序列規劃trigger-delay窗口，逐段保存exact-size BIN、SHA-256與manifest；詳見[TI EXT_TRIG分塊重播指南](../HKUST_BioData_Collector/TI_EXT_TRIGGER_REPLAY_GUIDE.md)。
 
 UI不會把原板PRF改成5或20 kHz，也不會把有保存缺口的BIN宣稱為連續心動資料。完整連續模式需新增FPGA/AFE抽取資料入口後再啟用真正可持續的資料流後端。
+
+## G. 示波器資料的嚴格離線判讀
+
+CH2 逐 PRI 分割後，仍必須依次通過亞採樣時間／載波相位校正、實測載波解調、近遠壁定位、固定管腔中心門、slow-time wall-filter、signed DPSS-STFT／Kasai及空間／方向／重現性 Gate。看到紅色頻譜能量或某一速度線，不等於已取得血流 PSV。
+
+完整公式、四類窗口、拒絕條件及 2026-08-19 雙接收示波器資料的去識別化稽核見[PW Doppler 嚴格處理流程與 0819 資料稽核](29_PW_DOPPLER_PROCESSING_PIPELINE_AND_0819_DATA_AUDIT_2026-09-20.md)。
