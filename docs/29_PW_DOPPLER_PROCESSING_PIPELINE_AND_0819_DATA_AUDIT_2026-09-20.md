@@ -196,18 +196,30 @@ f_D=\frac{f_c}{c}(\hat k_{TX}+\hat k_{RX})\cdot\mathbf v
 
 ## 9. 嚴格 QC／拒絕條件
 
-只有全部通過才能輸出定量速度：
+只有全部通過才能輸出定量速度。主技術 Gate 為：
+
+| QC | PASS |
+|---|---:|
+| Flow SNR | `>=3 dB` |
+| Welch directionality | `abs(D)>=0.15` |
+| STFT global directionality | `abs(D)>=0.15` |
+| 主方向 frame directionality 中位數 | `>=0.15` |
+| 有效 STFT frame 比例 | `>=20%` |
+| 中心門相對管腔外控制門 | `>=3 dB` |
+| narrow-line power fraction | `<0.50`，且不得判為固定窄線 |
+| Nyquist 邊緣功率 | `<0.20` |
+| Kasai median coherence | `>=0.10` |
+| 中心門與任一控制門的最大複數相關 | `<0.80` |
+
+另外必須滿足：
 
 - CH1/CH2 無削頂，管腔門至少約 32 個有效 ADC levels；
-- CH2 事件模板與相位參考可靠，沒有遺失／重複 PRI；
+- CH2 事件模板第 5 百分位相關至少 0.70，相位參考可靠，遺失 PRI 比例不超過 0.1%，且沒有重複／反向 PRI；
 - 候選距離門不被 T/R recovery 或固定振鈴覆蓋；
 - 近／遠壁跨頻帶穩定，追蹤相關合格，中央無競爭反射；
-- flow SNR `>=3 dB`；
-- `abs(directionality)>=0.15`，且有效 STFT frames 不為 0；
-- 管腔中心功率至少比管腔外控制門高約 3 dB；
-- Kasai 相干性至少約 0.10，並和 STFT 方向一致；
-- 不是跨深度／跨時間固定的窄線，Nyquist 邊緣沒有混疊證據；
-- 50/100/150 Hz wall-filter sweep、中心 `±0.25 mm` 和前／後半段的方向及主要包絡可重現；
+- 50/100/150 Hz 中至少兩個 wall filter 通過技術 Gate，且三者方向符號一致；
+- 中心 `±0.25 mm` 三個門方向一致；
+- 前、後半段方向一致，且兩半各自通過完整技術 Gate；
 - 至少 3 個由可靠壁搏動、PPG 或 ECG 切分的合格心動週期；
 - 入射角及單站／雙站幾何足以支持所報速度。
 
